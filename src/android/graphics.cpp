@@ -417,14 +417,18 @@ void Graphics::resize(int w, int h) {
 }
 void Graphics::set_guest_size(int width, int height) {
     auto &p = *impl_;
-    require(!p.guest_framebuffer && width > 0 && height > 0 && std::uint64_t(width) * height <= 16'777'216,
-            "Invalid or already configured Android surface");
+    require(width > 0 && height > 0 && std::uint64_t(width) * height <= 16'777'216,
+            "Invalid Android surface dimensions");
+    if (p.guest_framebuffer && width == p.guest_width && height == p.guest_height)
+        return;
     require(p.version.starts_with("OpenGL ES 3."), "Desktop scaling requires ANGLE OpenGL ES 3");
-    I texture{}, renderbuffer{}, framebuffer{};
+    I texture{}, renderbuffer{}, framebuffer{}, read_framebuffer{};
     p.call<void>("glGetIntegerv", U{0x8069}, &texture);
     p.call<void>("glGetIntegerv", U{0x8ca7}, &renderbuffer);
     p.call<void>("glGetIntegerv", U{0x8ca6}, &framebuffer);
-    p.call<void>("glGenTextures", 1, &p.guest_texture);
+    p.call<void>("glGetIntegerv", U{0x8caa}, &read_framebuffer);
+    if (!p.guest_texture)
+        p.call<void>("glGenTextures", 1, &p.guest_texture);
     p.call<void>("glBindTexture", U{0x0de1}, p.guest_texture);
     p.call<void>("glTexParameteri", U{0x0de1}, U{0x2801}, I{0x2601});
     p.call<void>("glTexParameteri", U{0x0de1}, U{0x2800}, I{0x2601});
@@ -432,10 +436,12 @@ void Graphics::set_guest_size(int width, int height) {
     p.call<void>("glTexParameteri", U{0x0de1}, U{0x2803}, I{0x812f});
     p.call<void>("glTexImage2D", U{0x0de1}, 0, I{0x8058}, width, height, 0, U{0x1908}, U{0x1401},
                  static_cast<const void *>(nullptr));
-    p.call<void>("glGenRenderbuffers", 1, &p.guest_depth);
+    if (!p.guest_depth)
+        p.call<void>("glGenRenderbuffers", 1, &p.guest_depth);
     p.call<void>("glBindRenderbuffer", U{0x8d41}, p.guest_depth);
     p.call<void>("glRenderbufferStorage", U{0x8d41}, U{0x88f0}, width, height);
-    p.call<void>("glGenFramebuffers", 1, &p.guest_framebuffer);
+    if (!p.guest_framebuffer)
+        p.call<void>("glGenFramebuffers", 1, &p.guest_framebuffer);
     p.call<void>("glBindFramebuffer", U{0x8d40}, p.guest_framebuffer);
     p.call<void>("glFramebufferTexture2D", U{0x8d40}, U{0x8ce0}, U{0x0de1}, p.guest_texture, 0);
     p.call<void>("glFramebufferRenderbuffer", U{0x8d40}, U{0x821a}, U{0x8d41}, p.guest_depth);
@@ -447,7 +453,13 @@ void Graphics::set_guest_size(int width, int height) {
     p.call<void>("glBindRenderbuffer", U{0x8d41}, static_cast<U>(renderbuffer));
     p.call<void>("glBindFramebuffer", U{0x8d40},
                  framebuffer ? static_cast<U>(framebuffer) : p.guest_framebuffer);
+    p.call<void>("glBindFramebuffer", U{0x8ca8},
+                 read_framebuffer ? static_cast<U>(read_framebuffer) : p.guest_framebuffer);
     p.call<void>("glViewport", 0, 0, width, height);
+}
+void Graphics::vsync(bool enabled) {
+    require(impl_->ecall<U>("eglSwapInterval", impl_->display, enabled ? 1 : 0) != 0,
+            "Cannot configure EGL vertical synchronization");
 }
 void Graphics::finish_frame() {
     auto &p = *impl_;

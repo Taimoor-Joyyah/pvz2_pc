@@ -7,7 +7,13 @@ int main() {
         auto root = fs::current_path() / "out/graphics-smoke";
         android::Runtime r({"org.example.graphics", "1.0", "en_US", 1, root / "data", {}, {}});
         r.host->open_window("Android compatibility GLES bridge validation", 128, 128);
-        r.graphics->open(r.host->native_window(), {});
+        auto geometry = r.host->describe_window();
+        require(geometry.at("client_origin_in_window")[1].get<int>() > 0 &&
+                    geometry.at("render_origin_in_client") == Json::array({0, 0}) &&
+                    geometry.at("render_size") == geometry.at("client_size") &&
+                    r.host->native_window() != r.host->render_window(),
+                "EGL must use a separate child covering only the client area below the title bar");
+        r.graphics->open(r.host->render_window(), {});
         r.graphics->resize(128, 128);
         auto call = [&](std::string_view name, std::initializer_list<std::uint64_t> args = {}) {
             return r.cpu.call(r.linker.symbol(name), std::span(args.begin(), args.size()));
@@ -160,12 +166,33 @@ int main() {
         call("glBindFramebuffer", {0x8d40, 0});
         require(call("glGetError") == 0, "Offscreen presentation has no GL errors");
         write_png_rgba(root / "letterbox.png", 128, 128, scaled, true);
+        r.graphics->set_guest_size(64, 96);
+        call("glDisable", {0x0c11});
+        r.cpu.f32(0, 0);
+        r.cpu.f32(1, 0);
+        r.cpu.f32(2, 1);
+        r.cpu.f32(3, 1);
+        call("glClearColor");
+        call("glClear", {0x4000});
+        r.graphics->finish_frame();
+        auto resized = r.graphics->read_rgba(128, 128);
+        auto upper_center = (120 * 128 + 64) * 4;
+        require(resized[center + 2] == std::byte{255} && resized[upper_center + 2] == std::byte{255} &&
+                    resized[0] == std::byte{0} && resized[2] == std::byte{0},
+                "Reallocating a live Android surface must render its full new height with correct "
+                "pillarboxing");
+        call("glGetIntegerv", {0x0ba2, state});
+        require(r.memory.load<int>(state + 8) == 64 && r.memory.load<int>(state + 12) == 96 &&
+                    call("glGetError") == 0,
+                "Live resolution changes update the actual guest viewport");
+        write_png_rgba(root / "native-resize.png", 128, 128, resized, true);
         Json report{
             {"result", "passed"},
             {"version", version},
             {"etc1_advertised", extensions.find("GL_OES_compressed_ETC1_RGB8_texture") != extensions.npos},
             {"validated", "GLES shader compilation, linking, guest client arrays, draw, pixel readback, "
-                          "ETC1 decoding, fixed-surface scaling, letterboxing and GL state preservation"}};
+                          "ETC1 decoding, client-area placement, render-buffer resizing, letterboxing "
+                          "and GL state preservation"}};
         write_json(root / "report.json", report);
         r.graphics->present();
         std::cout << report.dump(2) << '\n';

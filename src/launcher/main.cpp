@@ -1,4 +1,7 @@
+#include <acp/launcher.hpp>
 #include <acp/pvz2.hpp>
+
+#include <Windows.h>
 
 #include "replay.hpp"
 #include <charconv>
@@ -10,14 +13,17 @@ struct Arguments {
     std::map<std::string, std::vector<std::string>> values;
     std::set<std::string> flags;
     Arguments(int argc, wchar_t **argv) {
-        require(argc >= 2, "Usage: pvz2pc inspect|import|list|run [--apk FILE] [--obb FILE] [--root DIR] "
-                           "[--out FILE] [--version ID] [--probe] [--frames N] [--capture PNG] "
-                           "[--capture-every N] [--input FILE] [--live-input] [--profile NAME] [--config "
-                           "INI] [--angle-dir DIR] [--width N] [--height N]");
-        command = narrow(argv[1]);
-        for (int i = 2; i < argc; ++i) {
+        int first = 1;
+        command = "run";
+        if (argc > 1 && !std::wstring_view(argv[1]).starts_with(L"--")) {
+            command = narrow(argv[1]);
+            first = 2;
+        }
+        for (int i = first; i < argc; ++i) {
             auto key = narrow(argv[i]);
-            if (key == "--probe" || key == "--verify" || key == "--live-input") {
+            if (key == "--probe" || key == "--verify" || key == "--live-input" || key == "--fullscreen" ||
+                key == "--windowed" || key == "--maximized" || key == "--vsync" || key == "--no-vsync" ||
+                key == "--mute") {
                 flags.insert(key);
                 continue;
             }
@@ -45,9 +51,29 @@ struct Arguments {
         return result;
     }
 };
+class LogRedirect {
+    std::ofstream file_;
+    std::streambuf *out_{}, *error_{};
+
+  public:
+    void open(const fs::path &path) {
+        fs::create_directories(path.parent_path());
+        file_.open(path, std::ios::binary | std::ios::trunc);
+        require(bool(file_), "Cannot create game log: " + utf8(path));
+        out_ = std::cout.rdbuf(file_.rdbuf());
+        error_ = std::cerr.rdbuf(file_.rdbuf());
+    }
+    ~LogRedirect() {
+        if (out_)
+            std::cout.rdbuf(out_);
+        if (error_)
+            std::cerr.rdbuf(error_);
+    }
+};
 } // namespace
-int wmain(int argc, wchar_t **argv) {
+int acp::launcher::run_game(int argc, wchar_t **argv, bool graphical) {
     using namespace acp;
+    LogRedirect log_redirect;
     std::unique_ptr<android::GameAdapter> adapter;
     std::unique_ptr<android::Runtime> runtime;
     fs::path report_path;
@@ -56,9 +82,72 @@ int wmain(int argc, wchar_t **argv) {
     std::optional<ReplaySession> replay;
     fs::path game_config;
     games::Pvz2Options game_options;
+    launcher::Settings launch_settings;
+    fs::path launcher_config, log_path;
     try {
         Arguments args(argc, argv);
-        auto root = args.path("--root", host::default_data_root());
+        launcher_config = args.path("--launcher-config", launcher::default_config_path());
+        launch_settings = launcher::load(launcher_config);
+        launch_settings.root = fs::absolute(args.path("--root", launch_settings.root));
+        if (auto value = args.get("--profile"))
+            launch_settings.profile = *value;
+        if (auto value = args.get("--version"))
+            launch_settings.version = *value;
+        launch_settings.angle_directory = args.path("--angle-dir", launch_settings.angle_directory);
+        launch_settings.game_config = args.path("--config", launch_settings.game_config);
+        auto number = [&](const char *name, int &value) {
+            if (args.get(name)) {
+                auto count = args.count(name);
+                require(count <= INT_MAX, std::string(name) + " is too large");
+                value = static_cast<int>(count);
+            }
+        };
+        number("--width", launch_settings.window_width);
+        number("--height", launch_settings.window_height);
+        number("--render-width", launch_settings.render_width);
+        number("--render-height", launch_settings.render_height);
+        number("--volume", launch_settings.volume);
+        number("--fps", launch_settings.fps_limit);
+        require(int(args.flags.contains("--fullscreen")) + int(args.flags.contains("--windowed")) +
+                        int(args.flags.contains("--maximized")) <=
+                    1,
+                "Select one window mode");
+        if (args.flags.contains("--fullscreen"))
+            launch_settings.window_mode = host::WindowMode::Fullscreen;
+        if (args.flags.contains("--maximized"))
+            launch_settings.window_mode = host::WindowMode::Maximized;
+        if (args.flags.contains("--windowed"))
+            launch_settings.window_mode = host::WindowMode::Windowed;
+        require(!args.flags.contains("--vsync") || !args.flags.contains("--no-vsync"),
+                "Conflicting vsync options");
+        if (args.flags.contains("--vsync"))
+            launch_settings.vsync = true;
+        if (args.flags.contains("--no-vsync"))
+            launch_settings.vsync = false;
+        if (args.flags.contains("--mute"))
+            launch_settings.muted = true;
+        if (auto mode = args.get("--render-mode")) {
+            require(*mode == "native" || *mode == "custom", "Render mode must be native or custom");
+            launch_settings.native_resolution = *mode == "native";
+        } else if (args.get("--render-width") || args.get("--render-height"))
+            launch_settings.native_resolution = false;
+        launcher::validate(launch_settings);
+        auto root = launch_settings.root;
+        if (args.command == "settings") {
+            auto value = launcher::describe(launch_settings);
+            value["configuration"] = utf8(fs::absolute(launcher_config));
+            if (args.get("--out"))
+                write_json(args.path("--out"), value);
+            else
+                std::cout << value.dump(2) << '\n';
+            return 0;
+        }
+        if (graphical) {
+            log_path = root / "reports" /
+                       path_from_utf8("game-" + timestamp() + "-" + std::to_string(GetCurrentProcessId()) +
+                                      ".log");
+            log_redirect.open(log_path);
+        }
         if (args.command == "inspect") {
             std::vector<fs::path> apks;
             for (const auto &path : args.values["--apk"])
@@ -94,10 +183,7 @@ int wmain(int argc, wchar_t **argv) {
         }
         require(args.command == "run", "Unknown command: " + args.command);
         auto limit = args.count("--frames");
-        auto window_width = args.get("--width") ? args.count("--width") : 1280;
-        auto window_height = args.get("--height") ? args.count("--height") : 720;
-        require(window_width >= 64 && window_width <= 8192 && window_height >= 64 && window_height <= 8192,
-                "Window width and height must be between 64 and 8192");
+        auto window_width = launch_settings.window_width, window_height = launch_settings.window_height;
         auto capture = args.get("--capture");
         auto capture_every = args.count("--capture-every");
         require(!args.get("--capture-every") || (capture && capture_every > 0),
@@ -107,8 +193,10 @@ int wmain(int argc, wchar_t **argv) {
                 "--live-input requires --input FILE");
         if (auto input = args.get("--input"))
             replay.emplace(path_from_utf8(*input), args.flags.contains("--live-input"));
-        auto installation = android::open_installation(root, args.get("--version"));
-        if (auto profile = args.get("--profile")) {
+        auto installation = android::open_installation(
+            root, launch_settings.version.empty() ? std::nullopt : std::optional(launch_settings.version));
+        if (auto profile =
+                launch_settings.profile.empty() ? std::nullopt : std::optional(launch_settings.profile)) {
             require(!profile->empty() && std::ranges::all_of(*profile,
                                                              [](unsigned char c) {
                                                                  return (c >= 'a' && c <= 'z') ||
@@ -120,8 +208,11 @@ int wmain(int argc, wchar_t **argv) {
             installation.data_directory = installation.root / "profiles" /
                                           path_from_utf8(installation.package()) / path_from_utf8(*profile);
         }
-        game_config = args.path("--config", root / "game.ini");
+        game_config = launch_settings.game_config.empty() ? root / "game.ini" : launch_settings.game_config;
         game_options = games::read_pvz2_options(game_config, !args.flags.contains("--probe"));
+        game_options.render_width = launch_settings.native_resolution ? 0 : launch_settings.render_width;
+        game_options.render_height = launch_settings.native_resolution ? 0 : launch_settings.render_height;
+        game_options.fps_limit = launch_settings.fps_limit;
         adapter = games::pvz2(game_options);
         auto manifest = installation.metadata.at("manifest");
         android::Manifest identity;
@@ -177,11 +268,14 @@ int wmain(int argc, wchar_t **argv) {
             return 0;
         }
         std::optional<fs::path> angle;
-        if (auto path = args.get("--angle-dir"))
-            angle = path_from_utf8(*path);
+        if (!launch_settings.angle_directory.empty())
+            angle = launch_settings.angle_directory;
         r.host->open_window("PVZ2 PC - experimental compatibility runtime", static_cast<int>(window_width),
                             static_cast<int>(window_height));
-        r.graphics->open(r.host->native_window(), angle);
+        r.host->window_mode(launch_settings.window_mode);
+        r.graphics->open(r.host->render_window(), angle);
+        r.graphics->vsync(launch_settings.vsync);
+        r.host->audio_gain(launch_settings.muted ? 0.f : launch_settings.volume / 100.f);
         r.initialize_libraries();
         adapter->start(r);
         bool captured = false;
@@ -252,6 +346,11 @@ int wmain(int argc, wchar_t **argv) {
                                 : adapter->quit_requested() ? "application-exit"
                                                             : "frame-limit";
         report["data_directory"] = utf8(data);
+        report["launcher_configuration"] = utf8(fs::absolute(launcher_config));
+        report["launch_settings"] = launcher::describe(launch_settings);
+        report["window"] = r.host->describe_window();
+        if (!log_path.empty())
+            report["log"] = utf8(log_path);
         report["game_options"] = {{"config", utf8(fs::absolute(game_config))},
                                   {"google_play_games", "disabled"},
                                   {"purchases", game_options.purchases == games::PurchaseMode::AutoComplete
@@ -289,6 +388,7 @@ int wmain(int argc, wchar_t **argv) {
                     report["input_replay"] = replay->report();
                 report["frame_captures"] = frame_captures;
                 report["error"] = e.what();
+                report["launch_settings"] = launcher::describe(launch_settings);
                 report["game_options"] = {
                     {"config", utf8(fs::absolute(game_config))},
                     {"google_play_games", "disabled"},
@@ -300,6 +400,12 @@ int wmain(int argc, wchar_t **argv) {
             } catch (const std::exception &diagnostic) {
                 std::cerr << "Report write failed: " << diagnostic.what() << '\n';
             }
+        }
+        if (graphical) {
+            auto message = std::string(e.what());
+            if (!log_path.empty())
+                message += "\n\nLog: " + utf8(log_path);
+            MessageBoxW(nullptr, widen(message).c_str(), L"PVZ2 PC", MB_OK | MB_ICONERROR);
         }
         return 1;
     }

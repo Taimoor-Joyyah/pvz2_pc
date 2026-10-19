@@ -107,7 +107,10 @@ int main() {
         require(text.get<unsigned>(16) == 5 && text.get<unsigned>(32) == 6 && text.get<unsigned>(40) == 3,
                 "Back and text wire formats");
         require(text.get<std::uint8_t>(44) == 'a' && text.get<std::uint8_t>(47) == 0, "Text padding");
-        auto adapter = games::pvz2();
+        games::Pvz2Options input_options;
+        input_options.render_width = 1280;
+        input_options.render_height = 720;
+        auto adapter = games::pvz2(input_options);
         auto root = fs::current_path() / "test-artifacts" / path_from_utf8("pvz2-" + timestamp());
         android::Runtime runtime({"com.ea.game.pvz2_row", "13.5.1", "en_US", 1063, root, {}, {}});
         adapter->configure(runtime, {});
@@ -119,6 +122,22 @@ int main() {
             args.insert(args.end(), rest);
             return runtime.cpu.call(memory.load<Address>(table + index * 8), args);
         };
+        auto surface_type = jni.class_ref("com/popcap/SexyAppFramework/AndroidSurfaceView");
+        auto surface = jni.object("com/popcap/SexyAppFramework/AndroidSurfaceView");
+        auto can_scale = invoke(
+            33, {surface_type, memory.string("Graphics_CanSetGLViewScaleFactor"), memory.string("()Z")});
+        auto get_scale = invoke(
+            33, {surface_type, memory.string("Graphics_GetGLViewScaleFactor"), memory.string("()F")});
+        auto set_scale = invoke(
+            33, {surface_type, memory.string("Graphics_SetGLViewScaleFactor"), memory.string("(F)V")});
+        require(invoke(37, {surface, can_scale}) == 1 &&
+                    invoke(55, {surface, get_scale}) == std::bit_cast<unsigned>(0.5f),
+                "The original Android surface starts with a mutable 0.5 GL view scale");
+        auto scale_argument = memory.allocate(8);
+        memory.store(scale_argument, Address(std::bit_cast<unsigned>(1.2808344f)));
+        invoke(63, {surface, set_scale, scale_argument});
+        require(invoke(55, {surface, get_scale}) == std::bit_cast<unsigned>(1.2808344f),
+                "The native renderer can read back its scale through the JNI float ABI");
         auto type = jni.class_ref("com/popcap/SexyAppFramework/SexyAppFrameworkActivity");
         auto instance = jni.object("com/popcap/SexyAppFramework/SexyAppFrameworkActivity");
         auto ui_method = invoke(

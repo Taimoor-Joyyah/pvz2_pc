@@ -104,6 +104,7 @@ class Graphics {
     void resize(int width, int height);
     // Keep an Android surface stable while the desktop drawable changes size.
     void set_guest_size(int width, int height);
+    void vsync(bool enabled);
     void finish_frame();
     Bytes read_rgba(int width, int height);
     Json describe() const;

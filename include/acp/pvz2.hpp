@@ -15,6 +15,7 @@ enum class PurchaseMode { Disabled, AutoComplete };
 struct Pvz2Options {
     PurchaseMode purchases = PurchaseMode::Disabled;
     Json catalog = Json::array();
+    int render_width{}, render_height{}, fps_limit{};
 };
 Pvz2Options read_pvz2_options(const fs::path &file, bool create = true);
 std::unique_ptr<android::GameAdapter> pvz2(Pvz2Options options = {});

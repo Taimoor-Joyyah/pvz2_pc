@@ -1,6 +1,7 @@
 #include <acp/pvz2.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <thread>
 namespace acp::games {
 namespace {
@@ -14,6 +15,7 @@ class Pvz2 final : public android::GameAdapter {
     std::atomic_bool quitting_{};
     Pvz2Options options_;
     std::atomic_int frame_rate_{60};
+    std::atomic<float> view_scale_{0.5f};
     std::chrono::steady_clock::time_point previous_frame_{};
     Json preferences_ = Json::object();
     fs::path preferences_file_;
@@ -98,7 +100,17 @@ class Pvz2 final : public android::GameAdapter {
     }
 
   public:
-    explicit Pvz2(Pvz2Options options) : options_(std::move(options)) {}
+    explicit Pvz2(Pvz2Options options) : options_(std::move(options)) {
+        require((options_.render_width == 0 && options_.render_height == 0) ||
+                    (options_.render_width >= 64 && options_.render_height >= 64 &&
+                     std::uint64_t(options_.render_width) * options_.render_height <= 16'777'216),
+                "Invalid Android render resolution");
+        require(options_.fps_limit >= 0 && options_.fps_limit <= 240, "Invalid frame limit");
+        if (options_.render_width) {
+            width_ = options_.render_width;
+            height_ = options_.render_height;
+        }
+    }
     bool quit_requested() const override {
         return quitting_;
     }
@@ -532,13 +544,22 @@ class Pvz2 final : public android::GameAdapter {
             quitting_ = true;
             return 0;
         });
+        // AndroidSurfaceView stores the native renderer's selected scale. Returning a
+        // constant breaks the final offscreen-to-surface transform and crops the UI.
         hook(surface, "Graphics_GetGLViewScaleFactor", "()F",
-             [](auto &) { return std::bit_cast<std::uint32_t>(1.f); });
+             [this](auto &) { return std::bit_cast<std::uint32_t>(view_scale_.load()); });
         hook(surface, "Graphics_GetPointSizeInPixels", "()F",
              [](auto &) { return std::bit_cast<std::uint32_t>(1.f); });
-        hook(surface, "Graphics_CanSetGLViewScaleFactor", "()Z", [](auto &) { return 0; });
+        hook(surface, "Graphics_CanSetGLViewScaleFactor", "()Z", [](auto &) { return 1; });
         hook(surface, "Graphics_GetGLViewSysFBO", "()I", [](auto &) { return 0; });
-        hook(surface, "Graphics_SetGLViewScaleFactor", "(F)V", [](auto &) { return 0; });
+        hook(surface, "Graphics_SetGLViewScaleFactor", "(F)V", [this, &r](auto &c) {
+            auto scale = std::bit_cast<float>(static_cast<std::uint32_t>(c.arguments[0]));
+            require(std::isfinite(scale) && scale > 0 && scale <= 16,
+                    "Invalid native GL view scale factor");
+            view_scale_ = scale;
+            r.message(std::format("[Display] Native GL view scale: {}", scale));
+            return 0;
+        });
         hook(surface, "Graphics_SetFramerate", "(I)V", [this](auto &c) {
             auto fps = static_cast<int>(c.arguments[0]);
             require(fps > 0 && fps <= 1000, "Invalid game frame rate");
@@ -617,8 +638,12 @@ class Pvz2 final : public android::GameAdapter {
     }
     void start(android::Runtime &r) override {
         r.phase = "game-initialize";
-        r.graphics->set_guest_size(width_, height_);
         auto [drawable_width, drawable_height] = r.host->drawable_size();
+        if (!options_.render_width) {
+            width_ = drawable_width;
+            height_ = drawable_height;
+        }
+        r.graphics->set_guest_size(width_, height_);
         r.graphics->resize(drawable_width, drawable_height);
         viewport_ = host::fit_viewport(drawable_width, drawable_height, width_, height_);
         const std::string signature =
@@ -649,9 +674,9 @@ class Pvz2 final : public android::GameAdapter {
     }
     void frame(android::Runtime &r) override {
         // AndroidRenderer sleeps to its requested frame rate and clears before native drawing.
-        auto interval = std::chrono::nanoseconds(1'000'000'000 / frame_rate_.load());
-        if (previous_frame_ != std::chrono::steady_clock::time_point{} &&
-            interval < std::chrono::milliseconds(100))
+        auto fps = options_.fps_limit ? options_.fps_limit : frame_rate_.load();
+        auto interval = std::chrono::nanoseconds(1'000'000'000 / fps);
+        if (previous_frame_ != std::chrono::steady_clock::time_point{})
             std::this_thread::sleep_until(previous_frame_ + interval);
         previous_frame_ = std::chrono::steady_clock::now();
         r.cpu.call(r.linker.symbol("glClear"), std::array<Address, 1>{0x4000});
@@ -659,8 +684,8 @@ class Pvz2 final : public android::GameAdapter {
     }
     void event(android::Runtime &r, const host::Event &event) override {
         if (event.type == host::EventType::Resize && event.width > 0 && event.height > 0) {
-            // A desktop resize is presentation-only. Reinitializing Android resources
-            // for each intermediate drag size breaks the native layout and touch basis.
+            // The native game caches its intermediate render targets at startup.
+            // Keep that surface stable until relaunch; only presentation changes here.
             if (down_)
                 input_.push({host::EventType::Focus, 0, 0, 0, 0, false});
             down_ = false;

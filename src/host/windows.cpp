@@ -80,6 +80,13 @@ Viewport fit_viewport(int dw, int dh, int gw, int gh) {
     return {(dw - w) / 2, (dh - h) / 2, w, h};
 }
 namespace {
+LRESULT CALLBACK render_surface_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == WM_NCHITTEST)
+        return HTTRANSPARENT;
+    if (message == WM_ERASEBKGND)
+        return 1;
+    return DefWindowProcW(window, message, wparam, lparam);
+}
 class WindowsAudio final : public AudioStream {
   public:
     WindowsAudio(int frequency, int channels, float application_gain)
@@ -137,12 +144,27 @@ class Windows final : public Services {
         // Guest initialization can spend seconds in a single native call. Keep Windows
         // from substituting a ghost window while the runtime owns the actual surface.
         DisableProcessWindowsGhosting();
+        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         require(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS),
                 std::string("SDL initialization: ") + SDL_GetError());
         initialized_ = true;
         window_ = SDL_CreateWindow(std::string(title).c_str(), width, height,
                                    SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
         require(window_ != nullptr, std::string("Window creation: ") + SDL_GetError());
+        static std::once_flag surface_class;
+        std::call_once(surface_class, [] {
+            WNDCLASSW type{};
+            type.lpfnWndProc = render_surface_proc;
+            type.hInstance = GetModuleHandleW(nullptr);
+            type.lpszClassName = L"ACP_RenderSurface";
+            require(RegisterClassW(&type) != 0, "Cannot register the render surface class");
+        });
+        auto parent = static_cast<HWND>(native_window());
+        SetWindowLongPtrW(parent, GWL_STYLE, GetWindowLongPtrW(parent, GWL_STYLE) | WS_CLIPCHILDREN);
+        render_window_ = CreateWindowExW(0, L"ACP_RenderSurface", L"", WS_CHILD | WS_VISIBLE, 0, 0, 1, 1,
+                                         parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+        require(render_window_ != nullptr, "Cannot create the client render surface");
+        sync_render_window();
     }
     void *native_window() const override {
         require(window_ != nullptr, "No host window");
@@ -150,9 +172,41 @@ class Windows final : public Services {
                                       nullptr);
     }
     std::pair<int, int> drawable_size() const override {
-        int width{}, height{};
-        require(window_ && SDL_GetWindowSizeInPixels(window_, &width, &height), SDL_GetError());
-        return {width, height};
+        RECT client{};
+        require(window_ && GetClientRect(static_cast<HWND>(native_window()), &client),
+                "Cannot query the window client area");
+        return {client.right, client.bottom};
+    }
+    void *render_window() const override {
+        return render_window_;
+    }
+    Json describe_window() const override {
+        RECT outer{}, client{}, render{};
+        POINT origin{};
+        auto parent = static_cast<HWND>(native_window());
+        require(GetWindowRect(parent, &outer) && GetClientRect(parent, &client) &&
+                    ClientToScreen(parent, &origin) && GetWindowRect(render_window_, &render),
+                "Cannot describe the client render area");
+        return {{"client_size", {client.right, client.bottom}},
+                {"window_size", {outer.right - outer.left, outer.bottom - outer.top}},
+                {"client_origin_in_window", {origin.x - outer.left, origin.y - outer.top}},
+                {"render_origin_in_client", {render.left - origin.x, render.top - origin.y}},
+                {"render_size", {render.right - render.left, render.bottom - render.top}},
+                {"fullscreen", fullscreen_}};
+    }
+    void window_mode(WindowMode mode) override {
+        if (mode == WindowMode::Fullscreen) {
+            if (!fullscreen_)
+                fullscreen();
+        } else {
+            if (fullscreen_)
+                fullscreen();
+            require(mode == WindowMode::Maximized ? SDL_MaximizeWindow(window_)
+                                                  : SDL_RestoreWindow(window_),
+                    SDL_GetError());
+            require(SDL_SyncWindow(window_), SDL_GetError());
+        }
+        sync_render_window();
     }
     std::vector<Event> poll() override {
         std::vector<WebViewRequest> requests;
@@ -167,6 +221,7 @@ class Windows final : public Services {
         SDL_Event e{};
         // Pump native resize/DPI changes before deriving the mouse-to-pixel scale.
         SDL_PumpEvents();
+        sync_render_window();
         int logical_w = 1, logical_h = 1, pixel_w = 1, pixel_h = 1;
         if (window_) {
             SDL_GetWindowSize(window_, &logical_w, &logical_h);
@@ -232,6 +287,7 @@ class Windows final : public Services {
         fullscreen_ = !fullscreen_;
         require(SDL_SetWindowFullscreen(window_, fullscreen_), SDL_GetError());
         require(SDL_SyncWindow(window_), SDL_GetError());
+        sync_render_window();
     }
     void start_text(bool enabled) override {
         if (window_) {
@@ -271,7 +327,19 @@ class Windows final : public Services {
     }
 
   private:
+    void sync_render_window() {
+        if (!render_window_)
+            return;
+        auto [width, height] = drawable_size();
+        RECT current{};
+        GetClientRect(render_window_, &current);
+        if (width > 0 && height > 0 && (current.right != width || current.bottom != height))
+            require(SetWindowPos(render_window_, nullptr, 0, 0, width, height,
+                                 SWP_NOZORDER | SWP_NOACTIVATE) != FALSE,
+                    "Cannot resize the client render surface");
+    }
     SDL_Window *window_{};
+    HWND render_window_{};
     std::vector<std::weak_ptr<WindowsAudio>> streams_;
     bool initialized_{}, fullscreen_{};
     float gain_ = 1.f;

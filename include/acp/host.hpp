@@ -1,6 +1,7 @@
 #pragma once
 #include <acp/common.hpp>
 namespace acp::host {
+enum class WindowMode { Windowed, Maximized, Fullscreen };
 enum class EventType {
     Quit,
     Resize,
@@ -72,6 +73,16 @@ class Services {
     virtual ~Services() = default;
     virtual void open_window(std::string_view title, int width, int height) = 0;
     virtual void *native_window() const = 0;
+    virtual void *render_window() const {
+        return native_window();
+    }
+    virtual void window_mode(WindowMode mode) {
+        if (mode == WindowMode::Fullscreen)
+            fullscreen();
+    }
+    virtual Json describe_window() const {
+        return Json::object();
+    }
     virtual std::pair<int, int> drawable_size() const {
         return {1280, 720};
     }

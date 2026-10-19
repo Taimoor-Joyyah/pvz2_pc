@@ -9,6 +9,8 @@ The launcher imports a package, selects a game adapter, creates Android services
 | `host_windows` | Native window, events, replay decoding, audio output, web views, DLL loading | `runtime_common`, SDL3, WebView2 loader |
 | `android_compat` | Android package formats, JNI, Bionic shims, GLES/OpenSL bridges, storage | `guest_core`, `host_windows` |
 | `pvz2_adapter` | PopCap Java behavior, lifecycle sequence, event serialization | `android_compat` |
+| `launcher_settings` | Shared JSON settings, validation, Windows argument quoting and process launch | `host_windows` |
+| `game_application` | Console/GUI-independent commands and game startup | `pvz2_adapter`, `launcher_settings` |
 
 `native_sample` and the generic runtime tests do not link `pvz2_adapter`.
 
@@ -37,6 +39,10 @@ The launcher can run a static input replay or accept appended live input for reg
 Google Play Games operations stay signed out in `pvz2_play`. The separate `pvz2_billing` provider is selected by the adapter's INI settings. Disabled mode returns billing errors; explicit `auto_complete` mode simulates local purchases using the APK's MTX callback shapes and enum ordinals. Its profile-local ledger records grant and finalization stages before callbacks run, so an acknowledged consumable is not granted again after a restart. These records are identified as local tests and are never submitted to Google or EA. Offline catalog metadata is independent of installed game assets and does not replace missing shop offer content.
 
 The adapter also reproduces work done outside native code in the original Java renderer: clearing the color buffer before each native draw and respecting the requested frame rate. The reusable Bionic formatter handles ARM64 variadic arguments and translates Android's 32-bit wide characters explicitly, including Unicode code points and truncation errors.
+
+The launcher GUI and both game entry points share the same configuration codec. Startup applies the window mode before EGL creation and reads the client dimensions before `Native_GameAppInitialize`. ANGLE owns a child HWND sized to the parent client area so its image cannot overlap the nonclient caption. The compatibility renderer maps guest framebuffer zero to a host-owned render target and presents it to that child while restoring guest GL state. A fixed custom resolution or the startup client resolution stays stable for the session, because this APK caches intermediate targets across surface-change callbacks. Presentation and touch mapping share an aspect-fit viewport.
+
+`AndroidSurfaceView` exposes the native renderer's mutable view-scale factor, matching the supplied DEX (initial value 0.5, setter/getter and `Graphics_CanSetGLViewScaleFactor=true`). Ignoring that setter caused cropped native UI and incorrect scaling even when the desktop framebuffer dimensions were correct. The bridge preserves the JNI float bits and lets the native game choose its internal render targets.
 
 The initial loader handles little-endian AArch64 ELF libraries with section tables and the RELA relocation types used by the supplied package. Emulated TLS is covered by the native fixture; native ELF TLS descriptors still require implementation. Packed relocations, dynamic guest library loading after startup, and additional Android services also require further implementation. Required missing behavior must stop with a useful diagnostic rather than report fabricated success.
 

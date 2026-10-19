@@ -14,7 +14,13 @@ Install Visual Studio's C++ desktop tools (including the Windows SDK), **MSVC to
 
 The helper locates MSVC and Ninja through `vswhere`. First-party targets require C++23 and use MSVC's dedicated `/std:c++23preview` mode. Dependencies retain their own language settings. The first configure downloads pinned Dynarmic, Boost headers, SDL3, miniz, and nlohmann/json sources. Subsequent builds reuse the download cache.
 
-For CLion, select the Visual Studio x64 toolchain and the `windows-release` CMake preset. The executable is `out/build/release/pvz2pc.exe`.
+For CLion, select the Visual Studio x64 toolchain and the `windows-release` CMake preset. Release enables `/O2 /Ob3 /Oi /Ot`, whole-program optimization (`/GL /LTCG`), reference removal and identical-code folding. Floating-point semantics remain precise.
+
+The build produces three executables in `out/build/release`:
+
+- `pvz2pc-launcher.exe`: native Windows configuration and launch GUI.
+- `pvz2pc-game.exe`: Windows-subsystem game executable, with no console window.
+- `pvz2pc.exe`: console executable with the same game implementation and diagnostic commands.
 
 The compiler version is checked during configuration. An explicit `-DACP_ALLOW_UNPINNED_TOOLCHAIN=ON` CMake override permits testing another compiler version; that build needs separate validation.
 
@@ -60,7 +66,27 @@ $runner = '.\out\build\release\pvz2pc.exe'
 
 Repeat `--apk` for matching split APKs during inspection or import. `--data DIR` accepts the **contents of the game's Android/data/PACKAGE directory** (usually a directory containing `files/`). It maps to `userdata/PACKAGE/external/Android/data/PACKAGE`, separately from private Android files. Re-importing the same installation can add downloaded content; identical files are accepted and conflicting files are rejected before copying. Use a new `--root` to inspect conflicting content without replacing saves. Imports preserve the original APK and OBB, verify copied hashes, and only activate a completed installation. OBBs are optional for other native applications; PVZ2 requires its matching OBB at launch.
 
-Without `--root`, storage defaults to `%LOCALAPPDATA%/AndroidPcRuntime`.
+Without `--root`, the saved launcher configuration selects storage. Before configuration exists, executables inside a source checkout locate its imported `.runtime`; otherwise storage defaults to `%LOCALAPPDATA%/AndroidPcRuntime`.
+
+## Desktop launcher
+
+Open `out/build/release/pvz2pc-launcher.exe`. Select the game executable and imported installation directory, then choose the profile/version, window mode, client dimensions, render resolution, vertical sync, frame limit, mute and volume. Optional paths select a different ANGLE build or the existing game INI. **Save settings** persists the configuration; **Save & Play** also starts the selected executable. **Open game folder** opens its containing directory.
+
+Settings are stored in `launcher.json` beside the executables. Both game executables read that file when opened directly, including with no arguments. The game does not require the launcher process to stay open. Paths saved by the GUI are absolute; hand-written relative paths resolve against the JSON file's directory. `--launcher-config FILE` selects a different configuration for either the launcher or the game. An executable copied to another folder needs the same JSON beside it or that explicit argument. Command-line options override settings for that invocation without rewriting the saved configuration.
+
+Window modes are Windowed, Maximized and Fullscreen. **Client resolution at launch** measures the actual client pixels after applying the selected window mode, then initializes Android at that resolution. **Custom resolution** initializes Android at the specified render width/height independently of the desktop window. These choices are applied before native game initialization. Select Maximized or Fullscreen before launch to prepare rendering for the larger display.
+
+The game's intermediate render targets are cached at startup. Live native surface reinitialization did not rebuild them reliably in this APK, so the game keeps its chosen render resolution until relaunch. Resizing and F11 still work through aspect-preserving presentation with matching input. To change render quality, save the new resolution and relaunch. The native game's asset resolution policy can still choose different intermediate dimensions; a higher desktop resolution does not create higher-resolution artwork.
+
+The window-subsystem game writes logs to `ROOT/reports/game-TIMESTAMP-PID.log` and displays startup errors in a message box. The normal session JSON includes the effective settings and client/render geometry. Inspect the settings without starting a game with:
+
+```powershell
+.\out\build\release\pvz2pc.exe settings
+.\out\build\release\pvz2pc.exe settings --launcher-config '.\my-launcher.json'
+# One-run overrides also work with pvz2pc-game.exe:
+.\out\build\release\pvz2pc.exe run --maximized --render-mode native --fps 60
+.\out\build\release\pvz2pc.exe run --fullscreen --render-width 1920 --render-height 1080
+```
 
 ## Graphics and session launch
 
@@ -79,7 +105,7 @@ The packaging helper verifies the recorded hashes before copying. Another ANGLE 
 
 During a working game session, left click maps to touch, dragging maps to touch movement, Escape maps to Android Back, and F11 toggles fullscreen. Keyboard text events use the game's Java event protocol. These integrations require gameplay validation before a release is qualified.
 
-The desktop window can resize freely. PVZ2 renders to a stable 1280 x 720 Android surface, scaled to fit the current drawable while preserving its aspect ratio; unused space is black. Mouse input follows the displayed image, clicks in the black bars are ignored, and resizing or losing focus cancels an active drag. Use `--width 720 --height 960` to start with a custom window size. Presentation scaling requires ANGLE OpenGL ES 3, provided by the packaged build. Windows ghosting is disabled before host window creation; long synchronous guest loading calls can still delay input.
+The desktop window can resize freely. PVZ2 renders at the resolution selected before launch, scaled to fit the current drawable while preserving its aspect ratio; unused space is black. Mouse input follows the displayed image, clicks in the presentation bars are ignored, and resizing or losing focus cancels an active drag. Use `--width 720 --height 960` to choose the initial client size. ANGLE renders to a separate child window positioned at client origin, below the native caption and borders. Per-monitor DPI awareness keeps render sizes in physical pixels. Presentation requires ANGLE OpenGL ES 3, provided by the packaged build. Windows ghosting is disabled for both the launcher and game; long synchronous guest loading calls can still delay game input.
 
 Use `--profile NAME` for separate save storage under `ROOT/profiles/PACKAGE/NAME`. The default profile stays under `ROOT/userdata/PACKAGE`. To reproduce input in a bounded regression run, pass `--input replay.json`:
 
