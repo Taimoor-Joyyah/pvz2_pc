@@ -239,10 +239,26 @@ Audio::Audio(Runtime &runtime) : impl_(std::make_unique<Impl>(runtime)) {
         return 0;
     });
     p->slot(p->engine_table, 7, "CreateOutputMix", [p, &m](auto &c) {
-        m.store(c.x(1), p->create());
+        auto engine = p->player(c.x(0));
+        if (engine->engine != c.x(0))
+            return 2;
+        auto mix = p->create();
+        p->player(mix)->engine = engine->engine;
+        m.store(c.x(1), mix);
         return 0;
     });
     p->slot(p->engine_table, 2, "CreateAudioPlayer", [p, &m](auto &c) {
+        auto engine = p->player(c.x(0));
+        if (engine->engine != c.x(0))
+            return 2;
+        if (c.x(3)) {
+            auto locator = m.load<Address>(c.x(3));
+            if (locator && m.load<std::uint32_t>(locator) == 3) {
+                auto mix = p->objects.find(m.load<Address>(locator + 8));
+                if (mix == p->objects.end() || mix->second->engine != engine->engine)
+                    return 2;
+            }
+        }
         auto format = m.load<Address>(c.x(2) + 8);
         if (m.load<std::uint32_t>(format) != 2)
             return 9;
@@ -259,6 +275,7 @@ Audio::Audio(Runtime &runtime) : impl_(std::make_unique<Impl>(runtime)) {
             return 2;
         auto object = p->create(false, true);
         auto player = p->player(object);
+        player->engine = engine->engine;
         player->channels = static_cast<int>(channels);
         player->frequency = static_cast<int>(frequency);
         player->capacity = capacity;

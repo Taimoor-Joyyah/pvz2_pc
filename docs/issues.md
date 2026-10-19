@@ -34,6 +34,15 @@ Investigation started 2026-10-19. Every observed issue is recorded here, includi
 | ONLINE-001 | Disabled by design / audited | Online and unrelated bindings lacked a complete suppression inventory. | Added registered suppression policies, exact signatures, behavior and per-session call counts, plus per-library native import resolution status. Network, HTTP, billing, ads, analytics delivery, Google Play and unrelated process/device APIs are reported in `suppressed-functions.md`. Local persistence and cleanup remain implemented. |
 | COMPAT-009 | Fixed during follow-up review | Directory metadata lost traversal bits; sendfile permitted a self-copy; a contended lock coordinator could wait indefinitely. | Directory stat now preserves 0755 traversal bits, self-copy returns EINVAL, and nonblocking lock operations return EAGAIN when their cross-process coordinator is busy. Blocking waits check shutdown and worker failure. Added directory-stat coverage to the offline suite. |
 | COMPAT-010 | Open / documented in v0.1.0-alpha.1 | A sustained gameplay session stops on the guest instruction budget. | The user-reported stop on 2026-10-19 is recorded after 25,168 frames in `.runtime/reports/game-20261019T090437Z-13944.log` and the matching last-run JSON: `Guest instruction budget exceeded`, PC `0x32268b0`, LR `0x1c824f8`, last recorded import `free`. No unresolved imports or worker errors were reported. The budget resets for each `Cpu::call`; this evidence does not establish an accumulated session limit or a defect in `free`. Reproduction and root-cause analysis remain open. |
+| AUDIO-002 | Open / user reported 2026-10-19 | Some game sounds are silent, including Crazy Dave (the gardener) and Penny (the truck) speaking. | Dialogue appears without its expected voice sounds. Trace the game's sound/music checks and PCM production before changing playback. Reproduce on a separate QA profile, retain AUDIO-001's focus callback deduplication, then verify dialogue output and repeated focus changes together. Physical listening and a root cause are not yet established. |
+
+## 2026-10-19 follow-up: recorded before testing
+
+- [ ] COMPAT-010: inspect the recorded fault and reproduce the sustained-session stop on a copied QA save. Distinguish a single long guest call from an infinite loop; retain cancellation and execution guards.
+- [ ] AUDIO-002: reproduce missing Crazy Dave/Penny dialogue, trace its native/Java audio path, and repair the confirmed cause.
+- [ ] AUDIO-001 regression: retain startup-only application activation and deduplicated audio-focus notifications; verify repeated focus loss/gain does not create additional music engines or streams.
+
+The initial issue inventory above was written before running new tests or changing runtime code for this follow-up. Evidence and results will be added after validation.
 
 ## Validation sessions
 

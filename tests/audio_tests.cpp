@@ -92,7 +92,32 @@ void contracts() {
                 realized == 1,
             "OpenSL engine realization notifies its registered callback");
     auto engine = interface(engine_object, "SL_IID_ENGINE");
-    auto create_player = [&](unsigned frequency, unsigned channels) {
+    std::vector<Address> extra_engine_objects;
+    for (unsigned i = 0; i < 4; ++i) {
+        auto extra_out = m.allocate(8);
+        require(r.cpu.call(r.linker.symbol("slCreateEngine"),
+                           std::array<Address, 6>{extra_out, 0, 0, 0, 0, 0}) == 0,
+                "Multiple OpenSL engines can be created without a fixed limit");
+        extra_engine_objects.push_back(m.load<Address>(extra_out));
+    }
+    auto second_engine_object = extra_engine_objects.front();
+    auto second_engine = interface(second_engine_object, "SL_IID_ENGINE");
+    auto create_output_mix = [&](Address engine_interface) {
+        auto mix_out = m.allocate(8);
+        require(call(engine_interface, 7, {mix_out}) == 0, "OpenSL output mix creation");
+        return m.load<Address>(mix_out);
+    };
+    auto first_mix = create_output_mix(engine), second_mix = create_output_mix(second_engine);
+    auto output_mix_sink = [&](Address mix) {
+        auto locator = m.allocate(16);
+        m.store(locator, std::uint32_t{3});
+        m.store(locator + 8, mix);
+        auto sink = m.allocate(16);
+        m.store(sink, locator);
+        return sink;
+    };
+    auto first_sink = output_mix_sink(first_mix), second_sink = output_mix_sink(second_mix);
+    auto make_source = [&](unsigned frequency, unsigned channels) {
         auto locator = m.allocate(8);
         m.store(locator, std::uint32_t{6});
         m.store(locator + 4, std::uint32_t{2});
@@ -102,16 +127,27 @@ void contracts() {
         auto source = m.allocate(16);
         m.store(source, locator);
         m.store(source + 8, format);
+        return source;
+    };
+    auto create_player = [&](Address engine_interface, unsigned frequency, unsigned channels,
+                             Address sink) {
+        auto source = make_source(frequency, channels);
+        auto format = m.load<Address>(source + 8);
         auto object = m.allocate(8);
         m.store(format, std::uint32_t{1});
-        require(call(engine, 2, {object, source, 0, 0, 0, 0}) == 9, "MIME format is not accepted as PCM");
+        require(call(engine_interface, 2, {object, source, sink, 0, 0, 0}) == 9,
+                "MIME format is not accepted as PCM");
         m.store(format, std::uint32_t{2});
-        require(call(engine, 2, {object, source, 0, 0, 0, 0}) == 0, "Android PCM format 2 is accepted");
+        require(call(engine_interface, 2, {object, source, sink, 0, 0, 0}) == 0,
+                "Android PCM format 2 is accepted");
         auto value = m.load<Address>(object);
         call(value, 0, {0});
         return value;
     };
-    auto object = create_player(44100, 2);
+    auto mismatched_source = make_source(22050, 1), mismatched_player = m.allocate(8);
+    require(call(engine, 2, {mismatched_player, mismatched_source, second_sink, 0, 0, 0}) == 2,
+            "An audio player cannot use another engine's output mix");
+    auto object = create_player(engine, 44100, 2, first_sink);
     auto play = interface(object, "SL_IID_PLAY"), queue = interface(object, "SL_IID_BUFFERQUEUE");
     auto volume = interface(object, "SL_IID_VOLUME");
     unsigned callbacks = 0;
@@ -151,7 +187,7 @@ void contracts() {
     require(std::abs(first->level - 0.1f) < 0.00001f, "OpenSL millibels convert to amplitude gain");
     call(volume, 3, {1});
     require(first->level == 0.f, "OpenSL mute silences only its stream");
-    auto second_object = create_player(22050, 1);
+    auto second_object = create_player(second_engine, 22050, 1, second_sink);
     auto second_play = interface(second_object, "SL_IID_PLAY"),
          second_queue = interface(second_object, "SL_IID_BUFFERQUEUE");
     call(second_queue, 0, {bytes, 8});
@@ -169,7 +205,7 @@ void contracts() {
             "Stopping pauses and clears host output");
     require(!music_active(), "Stopped or empty players do not report active music");
     r.options.automatic_audio_callbacks = true;
-    auto background_object = create_player(44100, 1);
+    auto background_object = create_player(engine, 44100, 1, first_sink);
     auto background_play = interface(background_object, "SL_IID_PLAY"),
          background_queue = interface(background_object, "SL_IID_BUFFERQUEUE");
     std::promise<void> background_completed;
@@ -195,9 +231,14 @@ void contracts() {
     call(background_object, 6);
     call(object, 6);
     call(second_object, 6);
+    call(first_mix, 6);
+    call(second_mix, 6);
     call(engine_object, 6);
+    for (auto extra_engine_object : extra_engine_objects)
+        call(extra_engine_object, 6);
     auto report = r.audio->describe();
-    require(report.at("players_created") == 3 && report.at("streams_opened") == 3 &&
+    require(report.at("engines_created") == 5 && report.at("players_created") == 3 &&
+                report.at("streams_opened") == 3 &&
                 report.at("submitted_pcm_bytes") == 56 && report.at("completed_callbacks") == 2 &&
                 report.at("live_players") == 0,
             "Audio diagnostics retain playback evidence after player destruction");

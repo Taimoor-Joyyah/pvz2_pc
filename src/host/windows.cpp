@@ -260,12 +260,16 @@ class Windows final : public Services {
             case SDL_EVENT_KEY_DOWN:
             case SDL_EVENT_KEY_UP: {
                 bool released = e.type == SDL_EVENT_KEY_UP;
-                if (e.key.key == SDLK_ESCAPE && !released)
+                if (e.key.key == SDLK_ESCAPE && !e.key.repeat && !released)
                     out.push_back({EventType::Back});
+                if (e.key.key == SDLK_BACKSPACE && !released) {
+                    if (text_input_enabled_)
+                        out.push_back({EventType::Text, 0, 0, 0, 0, false, "\b"});
+                    else if (!e.key.repeat)
+                        out.push_back({EventType::Back});
+                }
                 if (e.key.key == SDLK_F11 && !e.key.repeat && !released)
                     fullscreen();
-                if (e.key.key == SDLK_BACKSPACE && !released)
-                    out.push_back({EventType::Text, 0, 0, 0, 0, false, "\b"});
                 int code = e.key.key == SDLK_RETURN  ? 66
                            : e.key.key == SDLK_LEFT  ? 21
                            : e.key.key == SDLK_RIGHT ? 22
@@ -290,6 +294,7 @@ class Windows final : public Services {
         sync_render_window();
     }
     void start_text(bool enabled) override {
+        text_input_enabled_ = enabled;
         if (window_) {
             if (enabled)
                 SDL_StartTextInput(window_);
@@ -341,7 +346,7 @@ class Windows final : public Services {
     SDL_Window *window_{};
     HWND render_window_{};
     std::vector<std::weak_ptr<WindowsAudio>> streams_;
-    bool initialized_{}, fullscreen_{};
+    bool initialized_{}, fullscreen_{}, text_input_enabled_{};
     float gain_ = 1.f;
     std::mutex web_mutex_;
     std::vector<WebViewRequest> web_requests_;
