@@ -1,0 +1,10 @@
+{
+  "source": "Google Android SDK emulator/lib64/gles_angle (Windows x64)",
+  "sdk_emulator_revision": "37.1.11",
+  "sdk_emulator_build_id": "15917651",
+  "files": {
+    "libEGL.dll": "aee18c35c85cb9b56d3d2e5610925c37f553f05562cd3c98d7dce64fc76c9fc0",
+    "libGLESv2.dll": "d661475dc90c62dbaada3b4c1ab5300bc433cede77add6b032a421fd5b670ee3",
+    "d3dcompiler_47.dll": "b25547f4c616fe19b283949faeb721413d6bf7b2d82dd7b08d4ff0d867db1703"
+  }
+}

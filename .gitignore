@@ -1,0 +1,14 @@
+/out/
+/build/
+/.runtime/
+/.idea/
+*.apk
+*.apks
+*.xapk
+*.obb
+/Android/
+/Plants+vs+Zombies*/
+/manifest.json
+*.user
+*.pdb
+*.obj
