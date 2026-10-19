@@ -6,7 +6,7 @@
       "displayName": "Windows x64 / MSVC / C++23",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/out/build/release",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "BUILD_TESTING": "ON" }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "BUILD_TESTING": "ON", "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install" }
     },
     {
       "name": "windows-debug",

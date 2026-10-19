@@ -77,7 +77,6 @@ Json describe(const Settings &value) {
             {"profile", value.profile},
             {"version", value.version},
             {"angle_directory", utf8(value.angle_directory)},
-            {"game_config", utf8(value.game_config)},
             {"display",
              {{"mode", mode_name(value.window_mode)},
               {"width", value.window_width},
@@ -106,7 +105,6 @@ Settings load(const fs::path &file, bool create) {
     value.executable = resolve(directory, data, "game_executable", value.executable);
     value.root = resolve(directory, data, "runtime_root", value.root);
     value.angle_directory = resolve(directory, data, "angle_directory", {});
-    value.game_config = resolve(directory, data, "game_config", {});
     value.profile = data.value("profile", "");
     value.version = data.value("version", "");
     auto display = data.value("display", Json::object());

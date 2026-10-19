@@ -26,31 +26,24 @@ The compiler version is checked during configuration. An explicit `-DACP_ALLOW_U
 
 The current issue list and validation sessions are tracked in [docs/issues.md](docs/issues.md).
 
+## Install
+
+After the Release build, package the graphics DLLs once, then install the portable application:
+
+```powershell
+.\tools\package-angle.ps1
+cmake --install out/build/release --config Release --prefix out/install
+```
+
+Open `out/install/pvz2pc-launcher.exe`. The install contains all three executables, ANGLE, app-local MSVC redistributable DLLs, documentation and dependency notices. The `windows-release` preset also sets `out/install` as the default prefix, so `cmake --install out/build/release --config Release` works directly. Use an absolute `--prefix` to choose another directory. `--component Runtime` optionally limits installation to the application component; dependency SDKs, headers and static libraries are excluded from the default install as well.
+
+Existing `launcher.json`, game content, profiles and reports are not copied or overwritten. Import your own APK/OBB separately and select its runtime root in the launcher. The WebView2 Evergreen Runtime is still required for HTML dialogs. ANGLE is verified against the recorded build before installation; configure `ACP_ANGLE_DIRECTORY` to use a different packaged directory, and explicitly set `ACP_VERIFY_ANGLE_INSTALL=OFF` when installing another ANGLE build.
+
 ## Google Play Games and purchases
 
-Google Play Games is disabled. Gameplay and saves use the local profile; achievements and leaderboard calls follow the APK's signed-out behavior without requiring a Google account or Play Services. In-game achievement tracking still belongs to the original game.
+Google Play Games and billing are disabled. Gameplay uses the selected local profile without a Google account. Purchase, grant, finalize and recovery requests return billing-unavailable errors. No simulated purchases, receipts, offline product catalog or billing ledger are implemented.
 
-The first regular launch creates `ROOT/game.ini` (`.runtime/game.ini` when using `--root .runtime`). Edit it, then restart:
-
-```ini
-[purchases]
-mode=disabled
-catalog_file=
-```
-
-`mode=disabled` rejects purchase attempts and reports billing unavailable. `mode=auto_complete` enables a **local purchase simulation**: requested purchases complete through the native game's purchase, grant and finalize callbacks. It charges no money, creates no Google or EA transaction, and labels its local records and receipts `local-test`. The ledger stays in the selected profile's `preferences/pc-runtime/billing.json`. Grant acknowledgements survive restarts, and completed consumables are excluded from restore. Existing installed game files and ordinary saves are not rewritten by this provider.
-
-Use `--config PATH` to select a different INI. The optional `catalog_file` is a JSON array of offline product metadata, resolved relative to the INI:
-
-```json
-[
-  {"sku": "MATCHING_GAME_PRODUCT_ID", "type": "consumable", "title": "Local test item"}
-]
-```
-
-Types are `consumable`, `nonconsumable` or `subscription`; `title` and `description` are optional. Simulated prices are zero and labeled `Local test`. Product IDs must match the game's offers. This catalog supplies platform metadata; it does not download missing shop offers or create new game content. Direct purchase requests can also introduce a previously unknown SKU. Purchase callbacks and recovery have dedicated JNI tests; the complete in-game shop flow still needs validation with matching offer data.
-
-An in-game **internet connection** error can happen before a request reaches the local billing provider. `auto_complete` does not turn on network services or bypass connectivity checks. The runtime now logs empty catalog queries and records when `purchaseItem` actually reaches the provider, so an offline shop rejection can be distinguished from a local callback failure. Failed online purchases do not grant paid items. The maintenance session inspected shop rendering without submitting a checkout; it did not validate in-game purchase completion.
+Legacy `game.ini` files and old billing records are ignored and left untouched. All supported application settings are in the launcher's JSON configuration.
 
 ## Inspect and import your game
 
@@ -70,7 +63,7 @@ Without `--root`, the saved launcher configuration selects storage. Before confi
 
 ## Desktop launcher
 
-Open `out/build/release/pvz2pc-launcher.exe`. Select the game executable and imported installation directory, then choose the profile/version, window mode, client dimensions, render resolution, vertical sync, frame limit, mute and volume. Optional paths select a different ANGLE build or the existing game INI. **Save settings** persists the configuration; **Save & Play** also starts the selected executable. **Open game folder** opens its containing directory.
+Open `out/build/release/pvz2pc-launcher.exe`. Select the game executable and imported installation directory, then choose the profile/version, window mode, client dimensions, render resolution, vertical sync, frame limit, mute and volume. An optional directory selects a different ANGLE build. **Save settings** persists the configuration; **Save & Play** also starts the selected executable. **Open game folder** opens its containing directory.
 
 Settings are stored in `launcher.json` beside the executables. Both game executables read that file when opened directly, including with no arguments. The game does not require the launcher process to stay open. Paths saved by the GUI are absolute; hand-written relative paths resolve against the JSON file's directory. `--launcher-config FILE` selects a different configuration for either the launcher or the game. An executable copied to another folder needs the same JSON beside it or that explicit argument. Command-line options override settings for that invocation without rewriting the saved configuration.
 
@@ -104,6 +97,8 @@ The graphics bridge loads standalone x64 ANGLE DLLs. It does not start an Androi
 The packaging helper verifies the recorded hashes before copying. Another ANGLE build can be selected explicitly with `--angle-dir DIR`; `-AllowDifferentBuild` permits packaging an alternative for testing. A development fallback also locates ANGLE in the installed Android SDK. Distribute the packaged `angle` directory with the executable, together with the applicable dependency notices.
 
 During a working game session, left click maps to touch, dragging maps to touch movement, Escape maps to Android Back, and F11 toggles fullscreen. Keyboard text events use the game's Java event protocol. These integrations require gameplay validation before a release is qualified.
+
+Window focus changes use the native audio-focus lost/gained callbacks without restarting the active game application. Repeated focus notifications are ignored. The launcher resizes its fields and columns together, repaints child controls, and preserves its layout through minimize/restore and DPI changes.
 
 The desktop window can resize freely. PVZ2 renders at the resolution selected before launch, scaled to fit the current drawable while preserving its aspect ratio; unused space is black. Mouse input follows the displayed image, clicks in the presentation bars are ignored, and resizing or losing focus cancels an active drag. Use `--width 720 --height 960` to choose the initial client size. ANGLE renders to a separate child window positioned at client origin, below the native caption and borders. Per-monitor DPI awareness keeps render sizes in physical pixels. Presentation requires ANGLE OpenGL ES 3, provided by the packaged build. Windows ghosting is disabled for both the launcher and game; long synchronous guest loading calls can still delay game input.
 

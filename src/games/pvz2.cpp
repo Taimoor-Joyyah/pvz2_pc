@@ -16,6 +16,7 @@ class Pvz2 final : public android::GameAdapter {
     Pvz2Options options_;
     std::atomic_int frame_rate_{60};
     std::atomic<float> view_scale_{0.5f};
+    std::optional<bool> audio_focused_;
     std::chrono::steady_clock::time_point previous_frame_{};
     Json preferences_ = Json::object();
     fs::path preferences_file_;
@@ -97,6 +98,16 @@ class Pvz2 final : public android::GameAdapter {
                                   std::chrono::seconds(startup   ? 120
                                                        : drawing ? 60
                                                                  : 30));
+    }
+    void audio_focus(android::Runtime &r, bool focused) {
+        if (audio_focused_ == focused)
+            return;
+        audio_focused_ = focused;
+        // The Android shell keeps application activity separate from audio focus.
+        // Repeating DidBecomeActive on desktop focus gains restarts native music.
+        call(r, activity, focused ? "Native_NotifyAudioGainedFocus" : "Native_NotifyAudioLostFocus", "()V");
+        r.message(
+            std::format("[AudioFocus] {}: {}", focused ? "gained" : "lost", r.audio->describe().dump()));
     }
 
   public:
@@ -203,10 +214,8 @@ class Pvz2 final : public android::GameAdapter {
         hook("com/popcap/SexyAppFramework/cloud/Cloud", "Cloud_SetPcpId", "(Ljava/lang/String;)V",
              [](auto &) { return 0; });
         install_pvz2_play(r);
-        java_components_["com.ea.nimble.mtx.googleplay"] =
-            install_pvz2_billing(r, options_, [this, &r](auto action, auto payload) {
-                nimble_broadcast(r, std::move(action), payload);
-            });
+        java_components_["com.ea.nimble.mtx.googleplay"] = install_pvz2_billing(
+            r, [this, &r](auto action, auto payload) { nimble_broadcast(r, std::move(action), payload); });
         auto notification_channels = std::make_shared<Json>(Json::object());
         hook("com/popcap/SexyAppFramework/AndroidNotification", "getScheduledLocalNotificationsData",
              "()Ljava/lang/String;", [&j](auto &) { return j.string("[]"); });
@@ -666,6 +675,7 @@ class Pvz2 final : public android::GameAdapter {
         call(r, surface, "Native_onSurfaceChanged", "(II)V",
              {static_cast<std::uint64_t>(width_), static_cast<std::uint64_t>(height_)});
         call(r, activity, "Native_applicationDidBecomeActive", "()V");
+        audio_focus(r, true);
         auto network_status = target(r, "com/popcap/SexyAppFramework/AndroidHttpProxy",
                                      "Native_SetCurrentNetworkStatus", "(I)V");
         r.jni->call_native(r.cpu, network_status,
@@ -683,6 +693,8 @@ class Pvz2 final : public android::GameAdapter {
         call(r, surface, "Native_onDrawFrame", "()V");
     }
     void event(android::Runtime &r, const host::Event &event) override {
+        if (event.type == host::EventType::Focus && audio_focused_ == event.focused)
+            return;
         if (event.type == host::EventType::Resize && event.width > 0 && event.height > 0) {
             // The native game caches its intermediate render targets at startup.
             // Keep that surface stable until relaunch; only presentation changes here.
@@ -710,9 +722,7 @@ class Pvz2 final : public android::GameAdapter {
                 std::lock_guard lock(r.state_mutex);
                 r.jni->get(activity_).fields["host_active"] = event.focused;
             }
-            call(r, activity,
-                 event.focused ? "Native_applicationDidBecomeActive" : "Native_applicationWillResignActive",
-                 "()V");
+            audio_focus(r, event.focused);
         }
         if (event.type == host::EventType::PointerDown)
             down_ = true;
@@ -728,6 +738,7 @@ class Pvz2 final : public android::GameAdapter {
             r.jni->get(activity_).fields["host_running"] = false;
         }
         if (r.phase == "running") {
+            audio_focus(r, false);
             call(r, activity, "Native_applicationWillResignActive", "()V");
             call(r, activity, "Native_applicationDidEnterBackground", "()V");
         }

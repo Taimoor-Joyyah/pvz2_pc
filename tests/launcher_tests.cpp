@@ -32,13 +32,11 @@ int main() {
         auto contents = read_json(file);
         contents["runtime_root"] = "relative/runtime";
         contents["game_executable"] = "bin/game.exe";
-        contents["game_config"] = "ini/game.ini";
         contents["angle_directory"] = "angle";
         write_json(file, contents);
         loaded = launcher::load(file);
         require(loaded.root == fs::absolute(root / "relative/runtime") &&
                     loaded.executable == fs::absolute(root / "bin/game.exe") &&
-                    loaded.game_config == fs::absolute(root / "ini/game.ini") &&
                     loaded.angle_directory == fs::absolute(root / "angle"),
                 "All relative paths resolve beside the configuration, independently of working directory");
         for (auto dimension : {-1, 0, 8193}) {

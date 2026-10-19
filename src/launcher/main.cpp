@@ -80,7 +80,6 @@ int acp::launcher::run_game(int argc, wchar_t **argv, bool graphical) {
     std::uint64_t frames = 0;
     Json frame_captures = Json::array();
     std::optional<ReplaySession> replay;
-    fs::path game_config;
     games::Pvz2Options game_options;
     launcher::Settings launch_settings;
     fs::path launcher_config, log_path;
@@ -94,7 +93,6 @@ int acp::launcher::run_game(int argc, wchar_t **argv, bool graphical) {
         if (auto value = args.get("--version"))
             launch_settings.version = *value;
         launch_settings.angle_directory = args.path("--angle-dir", launch_settings.angle_directory);
-        launch_settings.game_config = args.path("--config", launch_settings.game_config);
         auto number = [&](const char *name, int &value) {
             if (args.get(name)) {
                 auto count = args.count(name);
@@ -208,8 +206,6 @@ int acp::launcher::run_game(int argc, wchar_t **argv, bool graphical) {
             installation.data_directory = installation.root / "profiles" /
                                           path_from_utf8(installation.package()) / path_from_utf8(*profile);
         }
-        game_config = launch_settings.game_config.empty() ? root / "game.ini" : launch_settings.game_config;
-        game_options = games::read_pvz2_options(game_config, !args.flags.contains("--probe"));
         game_options.render_width = launch_settings.native_resolution ? 0 : launch_settings.render_width;
         game_options.render_height = launch_settings.native_resolution ? 0 : launch_settings.render_height;
         game_options.fps_limit = launch_settings.fps_limit;
@@ -351,11 +347,7 @@ int acp::launcher::run_game(int argc, wchar_t **argv, bool graphical) {
         report["window"] = r.host->describe_window();
         if (!log_path.empty())
             report["log"] = utf8(log_path);
-        report["game_options"] = {{"config", utf8(fs::absolute(game_config))},
-                                  {"google_play_games", "disabled"},
-                                  {"purchases", game_options.purchases == games::PurchaseMode::AutoComplete
-                                                    ? "auto_complete"
-                                                    : "disabled"}};
+        report["game_options"] = {{"google_play_games", "disabled"}, {"purchases", "disabled"}};
         if (replay)
             report["input_replay"] = replay->report();
         report["frame_captures"] = frame_captures;
@@ -389,12 +381,7 @@ int acp::launcher::run_game(int argc, wchar_t **argv, bool graphical) {
                 report["frame_captures"] = frame_captures;
                 report["error"] = e.what();
                 report["launch_settings"] = launcher::describe(launch_settings);
-                report["game_options"] = {
-                    {"config", utf8(fs::absolute(game_config))},
-                    {"google_play_games", "disabled"},
-                    {"purchases", game_options.purchases == games::PurchaseMode::AutoComplete
-                                      ? "auto_complete"
-                                      : "disabled"}};
+                report["game_options"] = {{"google_play_games", "disabled"}, {"purchases", "disabled"}};
                 write_json(report_path, report);
                 std::cerr << "Diagnostic report: " << utf8(report_path) << '\n';
             } catch (const std::exception &diagnostic) {

@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <charconv>
+#include <cmath>
 #include <commctrl.h>
 #include <shellapi.h>
 #include <shobjidl.h>
@@ -23,7 +24,6 @@ enum Id {
     Profile,
     Version,
     Angle,
-    GameIni,
     Mode,
     Width,
     Height,
@@ -39,7 +39,6 @@ enum Id {
     BrowseExe,
     BrowseRoot,
     BrowseAngle,
-    BrowseIni,
     Folder,
     Save,
     Play,
@@ -52,7 +51,7 @@ std::wstring text(HWND control) {
     value.resize(length);
     return value;
 }
-std::optional<fs::path> choose_path(HWND owner, bool folder, const fs::path &initial, bool executable) {
+std::optional<fs::path> choose_path(HWND owner, bool folder, const fs::path &initial) {
     ComPtr<IFileOpenDialog> dialog;
     require(SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
                                        IID_PPV_ARGS(&dialog))),
@@ -62,8 +61,7 @@ std::optional<fs::path> choose_path(HWND owner, bool folder, const fs::path &ini
     dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST |
                        (folder ? FOS_PICKFOLDERS : FOS_FILEMUSTEXIST));
     if (!folder) {
-        COMDLG_FILTERSPEC filter{executable ? L"Windows executable" : L"INI configuration",
-                                 executable ? L"*.exe" : L"*.ini"};
+        COMDLG_FILTERSPEC filter{L"Windows executable", L"*.exe"};
         dialog->SetFileTypes(1, &filter);
     }
     auto directory = folder ? initial : initial.parent_path();
@@ -88,7 +86,7 @@ class Launcher {
     struct Control {
         HWND window{};
         int x{}, y{}, width{}, height{}, font{};
-        bool stretch{}, right{}, bottom{};
+        float move_x{}, grow_x{}, move_y{};
     };
     HWND window_{};
     HINSTANCE instance_{};
@@ -117,21 +115,26 @@ class Launcher {
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance_, nullptr);
         require(control != nullptr, "Cannot create a launcher control");
         controls_[id] = control;
-        layout_.push_back({control, x, y, width, height, font, stretch, right, bottom});
+        layout_.push_back(
+            {control, x, y, width, height, font, float(right), float(stretch), float(bottom)});
         return control;
     }
-    void label(const wchar_t *caption, int x, int y, int width = 150) {
+    void label(const wchar_t *caption, int x, int y, int width = 150, float move_x = 0) {
         add(1000 + int(layout_.size()), L"STATIC", caption, SS_LEFT, x, y + 4, width, 22);
+        layout_.back().move_x = move_x;
     }
-    void edit(int id, int x, int y, int width, bool numeric = false, bool stretch = false) {
+    void edit(int id, int x, int y, int width, bool numeric = false, bool stretch = false,
+              bool right = false) {
         add(id, L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL | (numeric ? ES_NUMBER : 0), x, y, width, 26, 1,
-            stretch);
+            stretch, right);
     }
     void combo(int id, int x, int y, int width, std::initializer_list<const wchar_t *> values,
-               bool editable = false) {
+               bool editable = false, float move_x = 0, float grow_x = 0) {
         auto control =
             add(id, L"COMBOBOX", L"",
                 WS_TABSTOP | WS_VSCROLL | (editable ? CBS_DROPDOWN : CBS_DROPDOWNLIST), x, y, width, 230);
+        layout_.back().move_x = move_x;
+        layout_.back().grow_x = grow_x;
         for (auto value : values)
             SendMessageW(control, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(value));
     }
@@ -152,13 +155,28 @@ class Launcher {
     void arrange() {
         RECT client{};
         GetClientRect(window_, &client);
-        auto dx = client.right - scaled(860), dy = client.bottom - scaled(680);
-        for (const auto &control : layout_)
-            SetWindowPos(control.window, nullptr, scaled(control.x) + (control.right ? dx : 0),
-                         scaled(control.y) + (control.bottom ? dy : 0),
-                         scaled(control.width) + (control.stretch ? dx : 0), scaled(control.height),
-                         SWP_NOZORDER | SWP_NOACTIVATE);
-        InvalidateRect(window_, nullptr, TRUE);
+        auto dx = client.right - scaled(860), dy = client.bottom - scaled(642);
+        auto place = [&](const Control &control, HDWP batch) {
+            auto x = scaled(control.x) + int(std::lround(dx * control.move_x));
+            auto y = scaled(control.y) + int(std::lround(dy * control.move_y));
+            auto width = std::max(1, scaled(control.width) + int(std::lround(dx * control.grow_x)));
+            auto height = scaled(control.height);
+            if (batch)
+                return DeferWindowPos(batch, control.window, nullptr, x, y, width, height,
+                                      SWP_NOZORDER | SWP_NOACTIVATE);
+            SetWindowPos(control.window, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+            return HDWP{};
+        };
+        auto batch = BeginDeferWindowPos(static_cast<int>(layout_.size()));
+        if (batch)
+            for (const auto &control : layout_)
+                if (!(batch = place(control, batch)))
+                    break;
+        if (!batch || !EndDeferWindowPos(batch))
+            for (const auto &control : layout_)
+                place(control, nullptr);
+        // Moved child controls need repainting too, including group boxes and labels.
+        RedrawWindow(window_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
     }
     fs::path field_path(int id) const {
         auto value = text(controls_.at(id));
@@ -250,53 +268,50 @@ class Launcher {
         edit(Root, 180, 130, 560, false, true);
         add(BrowseRoot, L"BUTTON", L"Browse...", WS_TABSTOP, 750, 130, 86, 27, 1, false, true);
         label(L"Profile (blank = default)", 24, 172);
-        combo(Profile, 180, 168, 210, {}, true);
-        label(L"Game version", 420, 172, 100);
-        combo(Version, 530, 168, 306, {});
+        combo(Profile, 180, 168, 210, {}, true, 0, 0.5f);
+        label(L"Game version", 420, 172, 100, 0.5f);
+        combo(Version, 530, 168, 306, {}, false, 0.5f, 0.5f);
         label(L"ANGLE directory (optional)", 24, 210);
         edit(Angle, 180, 206, 560, false, true);
         add(BrowseAngle, L"BUTTON", L"Browse...", WS_TABSTOP, 750, 206, 86, 27, 1, false, true);
-        label(L"Game INI (optional)", 24, 248);
-        edit(GameIni, 180, 244, 560, false, true);
-        add(BrowseIni, L"BUTTON", L"Browse...", WS_TABSTOP, 750, 244, 86, 27, 1, false, true);
-        add(1100, L"BUTTON", L"Display", BS_GROUPBOX, 24, 286, 812, 166, 1, true);
-        label(L"Window mode", 40, 315, 130);
-        combo(Mode, 180, 311, 210, {L"Windowed", L"Maximized", L"Fullscreen"});
-        label(L"Client size", 420, 315, 100);
-        edit(Width, 530, 311, 85, true);
-        label(L"x", 626, 315, 15);
-        edit(Height, 650, 311, 85, true);
-        label(L"Rendering", 40, 354, 130);
-        combo(RenderMode, 180, 350, 210, {L"Client resolution at launch", L"Custom resolution"});
-        label(L"Render size", 420, 354, 100);
-        edit(RenderWidth, 530, 350, 85, true);
-        label(L"x", 626, 354, 15);
-        edit(RenderHeight, 650, 350, 85, true);
+        add(1100, L"BUTTON", L"Display", BS_GROUPBOX, 24, 248, 812, 166, 1, true);
+        label(L"Window mode", 40, 277, 130);
+        combo(Mode, 180, 273, 210, {L"Windowed", L"Maximized", L"Fullscreen"}, false, 0, 1);
+        label(L"Client size", 420, 277, 100, 1);
+        edit(Width, 530, 273, 85, true, false, true);
+        label(L"x", 626, 277, 15, 1);
+        edit(Height, 650, 273, 85, true, false, true);
+        label(L"Rendering", 40, 316, 130);
+        combo(RenderMode, 180, 312, 210, {L"Client resolution at launch", L"Custom resolution"}, false, 0,
+              1);
+        label(L"Render size", 420, 316, 100, 1);
+        edit(RenderWidth, 530, 312, 85, true, false, true);
+        label(L"x", 626, 316, 15, 1);
+        edit(RenderHeight, 650, 312, 85, true, false, true);
         add(1101, L"STATIC",
             L"Resolution is prepared before launch. Relaunch after changing render quality.", SS_LEFT, 180,
-            385, 630, 22, 2, true);
-        add(Vsync, L"BUTTON", L"Vertical sync", WS_TABSTOP | BS_AUTOCHECKBOX, 180, 414, 210, 24);
-        label(L"Frame limit", 420, 414, 100);
-        edit(Fps, 530, 410, 85, true);
-        add(1102, L"STATIC", L"0 = game controlled", SS_LEFT, 628, 417, 180, 20, 2);
-        add(1103, L"BUTTON", L"Audio", BS_GROUPBOX, 24, 464, 812, 65, 1, true);
-        add(Mute, L"BUTTON", L"Mute", WS_TABSTOP | BS_AUTOCHECKBOX, 42, 488, 130, 24);
-        label(L"Volume", 225, 488, 65);
-        edit(Volume, 300, 484, 85, true);
-        label(L"0 - 100", 400, 488, 80);
-        add(ConfigPath, L"STATIC", L"", SS_PATHELLIPSIS, 24, 547, 812, 22, 2, true, false, true);
+            347, 630, 22, 2, true);
+        add(Vsync, L"BUTTON", L"Vertical sync", WS_TABSTOP | BS_AUTOCHECKBOX, 180, 376, 210, 24, 1, true);
+        label(L"Frame limit", 420, 376, 100, 1);
+        edit(Fps, 530, 372, 85, true, false, true);
+        add(1102, L"STATIC", L"0 = game controlled", SS_LEFT, 628, 379, 180, 20, 2, false, true);
+        add(1103, L"BUTTON", L"Audio", BS_GROUPBOX, 24, 426, 812, 65, 1, true);
+        add(Mute, L"BUTTON", L"Mute", WS_TABSTOP | BS_AUTOCHECKBOX, 42, 450, 130, 24);
+        label(L"Volume", 225, 450, 65);
+        edit(Volume, 300, 446, 85, true);
+        label(L"0 - 100", 400, 450, 80);
+        add(ConfigPath, L"STATIC", L"", SS_PATHELLIPSIS, 24, 509, 812, 22, 2, true, false, true);
         add(Status, L"STATIC", L"Ready. Saved settings also apply when opening the game directly.", SS_LEFT,
-            24, 579, 812, 24, 1, true, false, true);
-        add(Folder, L"BUTTON", L"Open game folder", WS_TABSTOP, 24, 624, 160, 34, 1, false, false, true);
-        add(Close, L"BUTTON", L"Close", WS_TABSTOP, 520, 624, 90, 34, 1, false, true, true);
-        add(Save, L"BUTTON", L"Save settings", WS_TABSTOP, 620, 624, 100, 34, 1, false, true, true);
-        add(Play, L"BUTTON", L"Save && Play", WS_TABSTOP | BS_DEFPUSHBUTTON, 730, 624, 106, 34, 1, false,
+            24, 541, 812, 24, 1, true, false, true);
+        add(Folder, L"BUTTON", L"Open game folder", WS_TABSTOP, 24, 586, 160, 34, 1, false, false, true);
+        add(Close, L"BUTTON", L"Close", WS_TABSTOP, 520, 586, 90, 34, 1, false, true, true);
+        add(Save, L"BUTTON", L"Save settings", WS_TABSTOP, 620, 586, 100, 34, 1, false, true, true);
+        add(Play, L"BUTTON", L"Save && Play", WS_TABSTOP | BS_DEFPUSHBUTTON, 730, 586, 106, 34, 1, false,
             true, true);
         set_text(Executable, settings_.executable.native());
         set_text(Root, settings_.root.native());
         set_text(Profile, widen(settings_.profile));
         set_text(Angle, settings_.angle_directory.native());
-        set_text(GameIni, settings_.game_config.native());
         set_text(Width, std::to_wstring(settings_.window_width));
         set_text(Height, std::to_wstring(settings_.window_height));
         set_text(RenderWidth, std::to_wstring(settings_.render_width));
@@ -320,7 +335,6 @@ class Launcher {
         value.executable = field_path(Executable);
         value.root = field_path(Root);
         value.angle_directory = field_path(Angle);
-        value.game_config = field_path(GameIni);
         value.profile = narrow(text(controls_.at(Profile)));
         auto version = SendMessageW(controls_.at(Version), CB_GETCURSEL, 0, 0);
         value.version = version >= 0 && size_t(version) < versions_.size() ? versions_[version] : "";
@@ -351,13 +365,9 @@ class Launcher {
         }
         if (notification != BN_CLICKED)
             return;
-        if (id >= BrowseExe && id <= BrowseIni) {
-            auto target = id == BrowseExe     ? Executable
-                          : id == BrowseRoot  ? Root
-                          : id == BrowseAngle ? Angle
-                                              : GameIni;
-            auto selected = choose_path(window_, id == BrowseRoot || id == BrowseAngle, field_path(target),
-                                        id == BrowseExe);
+        if (id >= BrowseExe && id <= BrowseAngle) {
+            auto target = id == BrowseExe ? Executable : id == BrowseRoot ? Root : Angle;
+            auto selected = choose_path(window_, id == BrowseRoot || id == BrowseAngle, field_path(target));
             if (selected) {
                 set_text(target, selected->native());
                 if (id == BrowseRoot)
@@ -389,12 +399,12 @@ class Launcher {
             build();
             return 0;
         case WM_SIZE:
-            if (!loading_)
+            if (!loading_ && wparam != SIZE_MINIMIZED)
                 arrange();
             return 0;
         case WM_GETMINMAXINFO: {
             auto info = reinterpret_cast<MINMAXINFO *>(lparam);
-            RECT minimum{0, 0, scaled(860), scaled(680)};
+            RECT minimum{0, 0, scaled(860), scaled(642)};
             AdjustWindowRectExForDpi(&minimum, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi_);
             info->ptMinTrackSize = {minimum.right - minimum.left, minimum.bottom - minimum.top};
             return 0;
@@ -492,7 +502,7 @@ class Launcher {
         type.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
         require(RegisterClassW(&type) != 0, "Cannot register launcher window");
         dpi_ = GetDpiForSystem();
-        RECT size{0, 0, scaled(860), scaled(680)};
+        RECT size{0, 0, scaled(860), scaled(642)};
         AdjustWindowRectExForDpi(&size, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi_);
         auto window = CreateWindowExW(0, type.lpszClassName, L"PVZ2 PC Launcher",
                                       WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT,

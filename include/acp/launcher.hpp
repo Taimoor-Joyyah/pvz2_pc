@@ -3,7 +3,7 @@
 
 namespace acp::launcher {
 struct Settings {
-    fs::path executable, root, angle_directory, game_config;
+    fs::path executable, root, angle_directory;
     std::string profile, version;
     host::WindowMode window_mode = host::WindowMode::Windowed;
     int window_width = 1280, window_height = 720;

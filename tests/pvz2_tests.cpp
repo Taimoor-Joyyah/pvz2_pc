@@ -146,6 +146,23 @@ int main() {
         auto ui_buffer = jni.object("java/nio/ByteBuffer");
         jni.get(ui_buffer).fields = {{"address", ui_bytes}, {"capacity", 512}};
         auto drain_ui = [&] { invoke(37, {instance, ui_method, ui_buffer}); };
+        std::vector<bool> audio_focus;
+        unsigned activity_restarts{};
+        for (auto focused : {false, true}) {
+            auto callback = runtime.traps.add("test/audio-focus",
+                                              [&, focused](auto &) { audio_focus.push_back(focused); });
+            jni.register_native("com/popcap/SexyAppFramework/SexyAppFrameworkActivity",
+                                focused ? "Native_NotifyAudioGainedFocus" : "Native_NotifyAudioLostFocus",
+                                "()V", callback);
+        }
+        for (auto name : {"Native_applicationDidBecomeActive", "Native_applicationWillResignActive"})
+            jni.register_native(
+                "com/popcap/SexyAppFramework/SexyAppFrameworkActivity", name, "()V",
+                runtime.traps.add("test/activity-restart", [&](auto &) { ++activity_restarts; }));
+        for (auto focused : {true, true, false, false, true})
+            adapter->event(runtime, {host::EventType::Focus, 0, 0, 0, 0, focused});
+        require(audio_focus == std::vector<bool>{true, false, true} && activity_restarts == 0,
+                "Window focus changes notify audio once without restarting the active application");
         adapter->event(runtime, {host::EventType::Resize, 0, 0, 720, 1280});
         adapter->event(runtime, {host::EventType::PointerDown, 360, 100});
         adapter->event(runtime, {host::EventType::PointerUp, 360, 100});

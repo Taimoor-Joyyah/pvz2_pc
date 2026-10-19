@@ -14,5 +14,11 @@ foreach ($file in $locked.files.PSObject.Properties) {
 }
 New-Item -ItemType Directory -Path $DestinationDirectory -Force | Out-Null
 foreach ($record in $records) { Copy-Item -LiteralPath $record.source -Destination (Join-Path $DestinationDirectory $record.name) -Force }
+$emulatorDirectory = Split-Path -Parent (Split-Path -Parent $SourceDirectory)
+foreach ($notice in @('NOTICE.txt', 'LICENSE')) {
+    $noticeSource = Join-Path $SourceDirectory $notice
+    if (!(Test-Path -LiteralPath $noticeSource -PathType Leaf)) { $noticeSource = Join-Path $emulatorDirectory $notice }
+    if (Test-Path -LiteralPath $noticeSource -PathType Leaf) { Copy-Item -LiteralPath $noticeSource -Destination (Join-Path $DestinationDirectory $notice) -Force }
+}
 @{ source = $locked.source; components = $records } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $DestinationDirectory 'angle-build.json') -Encoding utf8
 Write-Output "Packaged standalone ANGLE DLLs in $DestinationDirectory"
