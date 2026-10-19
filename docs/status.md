@@ -2,6 +2,17 @@
 
 The implementation is in active development. **Interactive PVZ2 has reached the Ancient Egypt Day 3 tutorial, and saved world state has restored across launches. Full release qualification is still incomplete.**
 
+The latest offline compatibility pass resolves all 27 previously missing strong
+imports for the supplied version. It adds tested Android LP64/UTF32/IEEE binary128
+parsing and formatting, guest file operations and remapping, and cross-instance
+advisory locks with real file identities. The earlier Nimble SQLite locking error
+is absent from the new real-game regression. All seven Release CTest suites pass,
+including a rebuilt independent ARM64 NDK fixture. Reports now enumerate native
+import providers and disabled functions with behavior/call counts. See the
+[offline audit](offline-compatibility.md), [suppression inventory](suppressed-functions.md)
+and [issue tracker](issues.md) for evidence and remaining boundaries. The old
+six-suite figures below describe earlier validation passes.
+
 The latest audio/install follow-up separates desktop audio focus from application activation. A 1,200-frame refocus replay previously created four audio engines and output streams; the installed fixed build kept one, without CPU faults or worker errors. All six Release suites pass. Purchase simulation and its INI/catalog/receipt/ledger code have been removed at the user's request; billing only returns unavailable responses. The launcher now resizes/repaints its columns and fields together. Its final visual check was stopped by physical Escape. CMake installs a portable runtime with ANGLE, MSVC DLLs and notices, and reinstall preserves existing settings and profiles. Evidence: `out/build-audio-install.log`, `out/reports/audio-focus-after.json` and `out/reports/install-validation.json`.
 
 The 2026-10-19 maintenance pass added aspect-preserving desktop resizing with matching touch coordinates, disabled Windows process ghosting, and hardened atomic JSON replacement. A follow-up added the native launcher, shared persisted settings, selectable startup render resolution, caption-safe client rendering, a Windows-subsystem game executable, and stronger Release optimization. The Android view-scale setter/getter now match the original DEX; the repaired windowed menu includes its previously cropped bottom controls. The game caches intermediate render targets, so render quality is selected before initialization and requires relaunch to change. Live desktop resize and F11 use stable-surface presentation. Six CTest suites and the ANGLE geometry/pixel smoke test passed during development; final build evidence is in `out/build-launcher-final.log`. Interactive testing stopped when the user pressed physical Escape; the final startup-only policy and repaired gameplay HUD need a further interactive check.

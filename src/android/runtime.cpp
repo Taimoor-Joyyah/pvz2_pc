@@ -7,6 +7,7 @@ Runtime::Runtime(RuntimeOptions opts, std::unique_ptr<host::Services> services)
       host(std::move(services)) {
     require(!options.package.empty(), "A package identity is required");
     options.data = fs::absolute(options.data).lexically_normal();
+    working_directory_ = "/data/data/" + options.package + "/files";
     if (!options.obb.empty())
         options.obb = fs::absolute(options.obb).lexically_normal();
     for (const auto *folder : {"files", "cache", "preferences", "external"})
@@ -17,6 +18,8 @@ Runtime::Runtime(RuntimeOptions opts, std::unique_ptr<host::Services> services)
                              "libGLESv2.so", "libGLESv1_CM.so", "libEGL.so", "libOpenSLES.so"})
         linker.system_library(name);
     install_bionic(*this);
+    install_bionic_offline(*this);
+    install_bionic_scan(*this);
     jni = std::make_unique<Jni>(*this);
     graphics = std::make_unique<Graphics>(*this);
     audio = std::make_unique<Audio>(*this);
@@ -47,9 +50,8 @@ Runtime::~Runtime() {
     for (auto *thread : workers)
         if (thread->host.joinable())
             thread->host.join();
-    for (auto &[id, file] : files_)
-        if (id >= 3 && file)
-            std::fclose(file);
+    while (!files_.empty())
+        close_file(files_.begin()->first);
 }
 void Runtime::bind(std::string name, std::function<std::uint64_t(guest::Cpu &)> handler) {
     linker.provide(std::move(name),
@@ -57,6 +59,24 @@ void Runtime::bind(std::string name, std::function<std::uint64_t(guest::Cpu &)> 
 }
 void Runtime::bind_void(std::string name, guest::Handler handler) {
     linker.provide(std::move(name), std::move(handler));
+}
+void Runtime::record_suppression(std::string name, std::string category, std::string behavior) {
+    std::lock_guard lock(state_mutex);
+    suppressed_.try_emplace(std::move(name), Suppression{std::move(category), std::move(behavior)});
+}
+void Runtime::suppressed_call(std::string_view name) {
+    std::lock_guard lock(state_mutex);
+    auto it = suppressed_.find(std::string(name));
+    if (it != suppressed_.end())
+        ++it->second.calls;
+}
+void Runtime::bind_suppressed(std::string name, std::string category, std::string behavior,
+                             std::function<std::uint64_t(guest::Cpu &)> handler) {
+    record_suppression(name, std::move(category), std::move(behavior));
+    bind(name, [this, name, handler = std::move(handler)](guest::Cpu &cpu) {
+        suppressed_call(name);
+        return handler(cpu);
+    });
 }
 void Runtime::unavailable_imports() {
     for (const auto &name : linker.unresolved()) {
@@ -128,8 +148,8 @@ fs::path Runtime::path(std::string_view input, bool writing) const {
         }
     if (!matched) {
         require(value.front() != '/', "Unmapped Android path: " + value);
-        root = options.data / "files";
-        suffix = value;
+        require(is_safe_relative(value), "Guest path traversal rejected");
+        return path(working_directory() + "/" + value, writing);
     }
     require(suffix.empty() || is_safe_relative(suffix), "Guest path traversal rejected");
     auto target = fs::weakly_canonical(root / path_from_utf8(suffix));
@@ -304,6 +324,29 @@ Json Runtime::report() const {
                           {"initialized", image->initialized},
                           {"sha256", sha256(image->elf.bytes())}});
     Json workers = Json::array();
+    Json suppressions = Json::array();
+    for (const auto &[name, policy] : suppressed_)
+        suppressions.push_back({{"name", name}, {"category", policy.category},
+                                {"behavior", policy.behavior}, {"calls", policy.calls}});
+    Json imports = Json::object();
+    for (const auto &image : linker.images())
+        for (const auto &symbol : image->elf.symbols()) {
+            if (symbol.defined() || symbol.name.empty() || !symbol.binding) continue;
+            auto &entry = imports[symbol.name];
+            if (entry.is_null()) {
+                auto target = linker.symbol(symbol.name);
+                auto bridge = linker.provided().find(symbol.name);
+                std::string status = unsupported.contains(symbol.name) ? "unimplemented"
+                                     : !target ? "weak-optional"
+                                     : suppressed_.contains(symbol.name) ? "suppressed"
+                                     : bridge != linker.provided().end() && bridge->second == target ? "host-bridge"
+                                                                                                   : "guest-library";
+                entry = {{"status", status}, {"required_by", Json::array()}};
+            }
+            auto file = utf8(image->path.filename());
+            auto &required = entry["required_by"];
+            if (std::find(required.begin(), required.end(), file) == required.end()) required.push_back(file);
+        }
     for (const auto &[thread, worker] : threads)
         if (!worker->error.empty())
             workers.push_back(
@@ -314,6 +357,8 @@ Json Runtime::report() const {
             {"version", options.version_name},
             {"images", images},
             {"unsupported_imports", unsupported},
+            {"native_imports", imports},
+            {"suppressed_functions", suppressions},
             {"jni", jni->describe()},
             {"graphics", graphics->describe()},
             {"audio", audio->describe()},
@@ -333,9 +378,68 @@ int Runtime::open_file(const fs::path &path, std::string_view mode) {
     auto fp = _wfopen(path.c_str(), widen(mode).c_str());
     if (!fp)
         return -1;
+    int flags = mode.find('+') != mode.npos ? 2 : mode.starts_with('r') ? 0 : 1;
+    if (mode.starts_with('a'))
+        flags |= 0x400;
+    return adopt_file(fp, path, flags);
+}
+int Runtime::adopt_file(FILE *fp, const fs::path &path, int flags) {
+    std::lock_guard lock(state_mutex);
     auto id = next_file_++;
     files_[id] = fp;
+    file_paths_[id] = path;
+    descriptor_flags[id] = flags;
     return id;
+}
+int Runtime::open_directory(const fs::path &path) {
+    std::lock_guard lock(state_mutex);
+    auto id = next_file_++;
+    directory_paths_[id] = path;
+    descriptor_flags[id] = 0x10000;
+    return id;
+}
+std::optional<fs::path> Runtime::descriptor_path(int descriptor) const {
+    std::lock_guard lock(state_mutex);
+    if (auto it = file_paths_.find(descriptor); it != file_paths_.end())
+        return it->second;
+    if (auto it = directory_paths_.find(descriptor); it != directory_paths_.end())
+        return it->second;
+    return {};
+}
+std::string Runtime::working_directory() const {
+    std::lock_guard lock(state_mutex);
+    return working_directory_;
+}
+void Runtime::working_directory(std::string value) {
+    std::lock_guard lock(state_mutex);
+    working_directory_ = std::move(value);
+}
+std::expected<std::string, int> Runtime::absolute_guest_path(std::string_view value, int directory) const {
+    if (value.empty())
+        return std::unexpected(2);
+    if (value.front() == '/')
+        return std::string(value);
+    if (!is_safe_relative(value))
+        return std::unexpected(13);
+    if (directory == -100)
+        return working_directory() + "/" + std::string(value);
+    std::lock_guard lock(state_mutex);
+    auto it = directory_paths_.find(directory);
+    if (it == directory_paths_.end())
+        return std::unexpected(file_paths_.contains(directory) ? 20 : 9);
+    // Convert the host directory back through an existing virtual mount. Never expose a host path.
+    for (auto prefix : {"/data/data/" + options.package, std::string("/sdcard"),
+                        "/sdcard/Android/obb/" + options.package}) {
+        auto mount = resolve_path(prefix);
+        if (!mount)
+            continue;
+        auto relative = it->second.lexically_relative(*mount);
+        if (!relative.empty() && *relative.begin() != "..")
+            return prefix + "/" + utf8(relative) + "/" + std::string(value);
+        if (it->second == *mount)
+            return prefix + "/" + std::string(value);
+    }
+    return std::unexpected(13);
 }
 FILE *Runtime::file(int descriptor) const {
     std::lock_guard lock(state_mutex);
@@ -350,6 +454,18 @@ FILE *Runtime::file(int descriptor) const {
 }
 int Runtime::close_file(int descriptor) {
     std::lock_guard lock(state_mutex);
+    if (closing_file)
+        closing_file(descriptor);
+    std::erase_if(file_handles, [this, descriptor](const auto &item) {
+        if (item.second != descriptor) return false;
+        if (owned_file_handles_.erase(item.first)) memory.release(item.first);
+        return true;
+    });
+    file_paths_.erase(descriptor);
+    unread_bytes_.erase(descriptor);
+    descriptor_flags.erase(descriptor);
+    if (directory_paths_.erase(descriptor))
+        return 0;
     auto device = devices_.erase(descriptor) != 0;
     auto it = files_.find(descriptor);
     if (it == files_.end())
@@ -377,14 +493,60 @@ std::string Runtime::device(int descriptor) const {
 }
 Address Runtime::file_handle(int descriptor) {
     std::lock_guard lock(state_mutex);
+    for (const auto &[address, fd] : file_handles)
+        if (static_cast<int>(fd) == descriptor) return address;
     auto address = memory.allocate(256);
     memory.store(address, static_cast<std::int32_t>(descriptor));
     file_handles[address] = descriptor;
+    owned_file_handles_.insert(address);
     return address;
 }
 int Runtime::descriptor(Address handle) const {
     std::lock_guard lock(state_mutex);
     auto it = file_handles.find(handle);
     return it == file_handles.end() ? -1 : static_cast<int>(it->second);
+}
+size_t Runtime::read_stream(int descriptor, std::span<std::byte> bytes) {
+    std::lock_guard lock(state_mutex);
+    auto fp = file(descriptor);
+    if (!fp) return 0;
+    auto &pending = unread_bytes_[descriptor];
+    size_t count = 0;
+    while (count < bytes.size() && !pending.empty()) {
+        bytes[count++] = pending.front();
+        pending.pop_front();
+    }
+    if (count < bytes.size()) count += std::fread(bytes.data() + count, 1, bytes.size() - count, fp);
+    return count;
+}
+void Runtime::unread_stream(int descriptor, std::span<const std::byte> bytes) {
+    std::lock_guard lock(state_mutex);
+    auto &pending = unread_bytes_[descriptor];
+    for (auto it = bytes.rbegin(); it != bytes.rend(); ++it) pending.push_front(*it);
+    if (auto fp = file(descriptor)) std::clearerr(fp);
+}
+std::int64_t Runtime::stream_position(int descriptor) const {
+    std::lock_guard lock(state_mutex);
+    auto fp = file(descriptor);
+    if (!fp) return -1;
+    auto position = _ftelli64(fp);
+    auto it = unread_bytes_.find(descriptor);
+    return position < 0 ? position : position - (it == unread_bytes_.end() ? 0 : it->second.size());
+}
+int Runtime::seek_stream(int descriptor, std::int64_t offset, int origin) {
+    std::lock_guard lock(state_mutex);
+    auto fp = file(descriptor);
+    if (!fp) return -1;
+    if (origin == SEEK_CUR) offset -= static_cast<std::int64_t>(unread_bytes_[descriptor].size());
+    auto result = _fseeki64(fp, offset, origin);
+    if (!result) unread_bytes_.erase(descriptor);
+    return result;
+}
+bool Runtime::stream_eof(int descriptor) const {
+    std::lock_guard lock(state_mutex);
+    auto pending = unread_bytes_.find(descriptor);
+    if (pending != unread_bytes_.end() && !pending->second.empty()) return false;
+    auto fp = file(descriptor);
+    return fp && std::feof(fp);
 }
 } // namespace acp::android

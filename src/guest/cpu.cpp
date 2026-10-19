@@ -330,6 +330,12 @@ float Cpu::f32(size_t i) const {
 void Cpu::f32(size_t i, float v) {
     impl_->jit->SetVector(i, {std::bit_cast<std::uint32_t>(v), 0});
 }
+std::array<std::uint64_t, 2> Cpu::v128(size_t i) const {
+    return impl_->jit->GetVector(i);
+}
+void Cpu::v128(size_t i, std::array<std::uint64_t, 2> value) {
+    impl_->jit->SetVector(i, value);
+}
 std::uint64_t Cpu::argument(size_t i) const {
     return i < 8 ? x(i) : memory_.load<std::uint64_t>(sp() + (i - 8) * 8);
 }

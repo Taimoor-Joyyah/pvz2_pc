@@ -64,6 +64,21 @@ void Memory::release(Address address) {
     auto size = it->second;
     live_bytes_ -= size;
     allocations_.erase(it);
+    release_range(address, size);
+}
+void Memory::shrink_pages(Address address, size_t size) {
+    std::lock_guard lock(mutex_);
+    auto it = allocations_.find(address);
+    require(it != allocations_.end() && size && size <= it->second && !(address % page_size) &&
+                !(size % page_size) && !(it->second % page_size), "Invalid page allocation shrink");
+    auto tail = it->second - size;
+    if (!tail) return;
+    protect(address + size, tail, 0);
+    it->second = size;
+    live_bytes_ -= tail;
+    release_range(address + size, tail);
+}
+void Memory::release_range(Address address, size_t size) {
     auto after = free_.lower_bound(address);
     if (after != free_.end() && address + size == after->first) {
         size += after->second;
@@ -105,7 +120,9 @@ void Memory::protect(Address address, size_t size, unsigned permissions) {
     for (auto p = address & ~(page_size - 1ull); p < align_up(address + size, page_size); p += page_size) {
         auto index = p / page_size;
         require(permissions_[index] != 0, "Protecting unmapped guest memory");
-        permissions_[index] = static_cast<unsigned char>(permissions);
+        // Keep an allocation marker for PROT_NONE pages so mprotect can restore access.
+        // Zero denotes a page that has never been committed; access checks use the low rwx bits.
+        permissions_[index] = static_cast<unsigned char>(permissions | 8);
         pages_[index] = ((permissions & (Read | Write)) == (Read | Write)) ? arena_ + p : nullptr;
     }
 }

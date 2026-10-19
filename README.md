@@ -133,6 +133,12 @@ For a new native game, implement `GameAdapter`, register its Java shell behavior
 
 ## Independent Android test application
 
+The [offline compatibility audit](docs/offline-compatibility.md) lists the 27
+formerly unresolved imports, their implementations and validation boundaries.
+The [suppressed-function inventory](docs/suppressed-functions.md) lists disabled
+online and unrelated APIs. Runtime JSON reports include importing libraries,
+binding status, and suppression behavior/call counts.
+
 ```powershell
 .\tools\build-android-fixture.ps1
 .\tools\build.ps1 -Configuration release -Test

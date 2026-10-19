@@ -16,7 +16,9 @@ Address unavailable(android::Jni &j) {
 Address install_pvz2_billing(android::Runtime &r, std::function<void(std::string, Address)> broadcast) {
     auto &j = *r.jni;
     auto hook = [&r, &j](const char *name, const char *signature, auto handler) {
-        j.hook(api, name, signature, [&r, handler](android::JavaCall &call) -> Address {
+        j.hook_suppressed(api, name, signature, "online-billing",
+                         "Billing unavailable: empty transactions/catalog or Nimble NOT_AVAILABLE (103); no grants",
+                         [&r, handler](android::JavaCall &call) -> Address {
             std::lock_guard lock(r.state_mutex);
             return handler(call);
         });

@@ -1,5 +1,6 @@
 /out/
 /build/
+/test-artifacts/
 /.runtime/
 /.idea/
 *.apk

@@ -194,6 +194,16 @@ void Jni::hook(std::string type, std::string name, std::string signature, JavaHa
     std::lock_guard lock(runtime_.state_mutex);
     hooks_[key(normalized(type), name, signature)] = std::move(fn);
 }
+void Jni::hook_suppressed(std::string type, std::string name, std::string signature,
+                          std::string category, std::string behavior, JavaHandler fn) {
+    auto key = type + "." + name + signature;
+    runtime_.record_suppression(key, std::move(category), std::move(behavior));
+    hook(std::move(type), std::move(name), std::move(signature),
+         [key = std::move(key), fn = std::move(fn)](JavaCall &call) {
+             call.runtime.suppressed_call(key);
+             return fn(call);
+         });
+}
 void Jni::field(std::string type, std::string name, std::string signature, std::uint64_t value) {
     std::lock_guard lock(runtime_.state_mutex);
     if (value && (signature.starts_with('L') || signature.starts_with('[')))

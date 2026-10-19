@@ -75,7 +75,11 @@ void install_pvz2_analytics(android::Runtime &r) {
            });
     for (const auto *type : {analytics, "com/glu/plugins/gluanalytics/IAnalytics"}) {
         for (const auto &[name, signature] : disabled_methods)
-            j.hook(type, name, signature, [](auto &) { return 0; });
+            if (std::string_view(name) != "setCustomProperties" &&
+                std::string_view(name) != "setEATargetedMarketing" &&
+                std::string_view(name) != "shortcircuitEATargetedMarketingOff")
+                j.hook_suppressed(type, name, signature, "online-analytics",
+                                  "Disabled SDK backend: no analytics delivery", [](auto &) { return 0; });
         for (const auto *name : {"getAnalyticsApplicationName", "getAnalyticsDeviceIdentifier",
                                  "getAnalyticsEnvironment", "getRevenueIdentifier", "getSessionIdentifier"})
             j.hook(type, name, "()Ljava/lang/String;", [&j](auto &) { return j.string(""); });

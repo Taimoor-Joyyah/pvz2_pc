@@ -79,6 +79,8 @@ int wmain(int argc, wchar_t **argv) {
                             "APK import and downloaded-data collision handling",
                             "Java worker callbacks"};
         report["checks"].push_back("NDK OpenSL interfaces and PCM structure layouts");
+        report["checks"].push_back("NDK scanf varargs, UTF32 streams, LP64 integers and IEEE binary128 conversion/formatting");
+        report["checks"].push_back("NDK openat/fdopen, realpath, stat identity, truncation and mremap");
         write_json(report_path, report);
         std::cout << "Independent Android C++23 native test passed on the main and callback threads; "
                   << utf8(report_path) << '\n';

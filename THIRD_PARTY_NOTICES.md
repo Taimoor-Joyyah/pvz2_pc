@@ -3,7 +3,7 @@
 Pinned source revisions and releases are declared in `cmake/Dependencies.cmake`. Preserve the original dependency licenses when packaging binaries.
 
 - [Dynarmic](https://github.com/lioncash/dynarmic): 0BSD, with its bundled dependencies' individual notices.
-- [Boost](https://www.boost.org/users/license.html): Boost Software License 1.0.
+- [Boost](https://www.boost.org/users/license.html): Boost Software License 1.0. Header-only components support Dynarmic and the bridge's exact integer arithmetic / binary128 conversion and formatting.
 - [SDL3](https://github.com/libsdl-org/SDL): zlib license and included third-party notices.
 - [miniz](https://github.com/richgel999/miniz): its included MIT/public-domain notices.
 - [nlohmann/json](https://github.com/nlohmann/json): MIT license.

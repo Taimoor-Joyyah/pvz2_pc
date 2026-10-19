@@ -24,6 +24,7 @@ class Memory {
     Memory(const Memory &) = delete;
     Address allocate(size_t size, unsigned permissions = Read | Write, size_t alignment = 16);
     void release(Address address);
+    void shrink_pages(Address address, size_t size);
     void protect(Address address, size_t size, unsigned permissions);
     bool valid(Address address, size_t size, unsigned permissions = Read) const;
     void read(Address address, std::span<std::byte> out) const;
@@ -57,6 +58,7 @@ class Memory {
     std::map<size_t, std::set<Address>> free_sizes_;
     std::uint64_t allocation_calls_{}, live_bytes_{};
     void add_free(Address address, size_t size);
+    void release_range(Address address, size_t size);
     void erase_free(std::map<Address, size_t>::iterator item);
     mutable std::recursive_mutex mutex_;
 };
@@ -142,6 +144,8 @@ class Cpu {
     void f64(size_t index, double value);
     float f32(size_t index) const;
     void f32(size_t index, float value);
+    std::array<std::uint64_t, 2> v128(size_t index) const;
+    void v128(size_t index, std::array<std::uint64_t, 2> value);
     std::uint64_t argument(size_t index) const;
     Address sp() const;
     void sp(Address value);

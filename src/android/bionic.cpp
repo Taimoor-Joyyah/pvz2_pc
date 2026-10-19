@@ -23,9 +23,14 @@ struct Args {
     guest::Cpu &cpu;
     size_t integer{}, floating{};
     Address va{};
+    size_t stack_offset{};
     std::uint64_t word() {
-        if (!va)
-            return cpu.argument(integer++);
+        if (!va) {
+            if (integer < 8) return cpu.x(integer++);
+            auto value = cpu.memory().load<std::uint64_t>(cpu.sp() + stack_offset);
+            stack_offset += 8;
+            return value;
+        }
         auto &m = cpu.memory();
         auto offset = m.load<std::int32_t>(va + 24);
         if (offset < 0) {
@@ -40,7 +45,8 @@ struct Args {
         if (!va) {
             if (floating < 8)
                 return cpu.f64(floating++);
-            auto value = cpu.memory().load<double>(cpu.sp() + (integer++ - 8) * 8);
+            auto value = cpu.memory().load<double>(cpu.sp() + stack_offset);
+            stack_offset += 8;
             return value;
         }
         auto &m = cpu.memory();
@@ -52,6 +58,23 @@ struct Args {
         auto stack = m.load<Address>(va);
         m.store(va, stack + 8);
         return m.load<double>(stack);
+    }
+    std::array<std::uint64_t, 2> quad() {
+        if (!va) {
+            if (floating < 8) return cpu.v128(floating++);
+            auto stack = align_up(cpu.sp() + stack_offset, 16);
+            stack_offset = static_cast<size_t>(stack + 16 - cpu.sp());
+            return cpu.memory().load<std::array<std::uint64_t, 2>>(stack);
+        }
+        auto &m = cpu.memory();
+        auto offset = m.load<std::int32_t>(va + 28);
+        if (offset < 0) {
+            m.store(va + 28, offset + 16);
+            return m.load<std::array<std::uint64_t, 2>>(m.load<Address>(va + 16) + static_cast<std::int64_t>(offset));
+        }
+        auto stack = align_up(m.load<Address>(va), 16);
+        m.store(va, stack + 16);
+        return m.load<std::array<std::uint64_t, 2>>(stack);
     }
 };
 template <class T> std::string print_value(std::string_view fmt, T value) {
@@ -224,8 +247,7 @@ std::string format_text(guest::Cpu &cpu, std::string_view format, size_t first, 
         case 'E':
         case 'a':
         case 'A':
-            require(length != "L", "Long-double printf conversion requires ARM64 binary128 support");
-            output += print_value(spec + c, args.real());
+            output += length == "L" ? format_binary128(args.quad(), spec, c) : print_value(spec + c, args.real());
             break;
         case 's':
         case 'S': {
@@ -991,7 +1013,8 @@ void install_bionic(Runtime &r) {
     bind("__register_atfork", [](auto &) { return 0; });
     for (const auto *name : {"fork", "execv", "system", "mknod", "mkfifo", "ptrace", "waitpid", "link",
                              "symlink", "readlink", "__readlink_chk", "pipe"})
-        bind(name, [&](auto &c) { return r.failure(c, 38); });
+        r.bind_suppressed(name, "unrelated-posix", "-1 / ENOSYS; no host process, device, pipe or link is created",
+                          [&](auto &c) { return r.failure(c, 38); });
     for (const auto *name : {"getpwuid", "getpwnam", "getgrgid", "getgrnam"})
         bind(name, [](auto &) -> Address { return 0; });
     bind("getpwuid_r", [&](auto &c) {
@@ -1065,36 +1088,38 @@ void install_bionic(Runtime &r) {
             }
             if (c.current_import == "fread" || c.current_import == "__fread_chk") {
                 auto dst = m.writable(c.x(0), count * size);
-                return std::fread(dst.data(), count, size, fp);
+                return count ? r.read_stream(r.descriptor(handle), dst) / count : 0;
             }
             auto src = m.readable(c.x(0), count * size);
             return std::fwrite(src.data(), count, size, fp);
         });
     bind("fflush", [&](auto &c) {
         auto fp = c.x(0) ? r.file(r.descriptor(c.x(0))) : nullptr;
+        if (c.x(0) && !fp)
+            return static_cast<int>(r.failure(c, 9));
         return std::fflush(fp);
     });
     bind("fseek", [&](auto &c) {
         auto fp = r.file(r.descriptor(c.x(0)));
-        return fp ? _fseeki64(fp, std::bit_cast<std::int64_t>(c.x(1)), static_cast<int>(c.x(2))) : -1;
+        return fp ? r.seek_stream(r.descriptor(c.x(0)), std::bit_cast<std::int64_t>(c.x(1)), static_cast<int>(c.x(2))) : -1;
     });
     bind("fseeko", [&](auto &c) {
         auto fp = r.file(r.descriptor(c.x(0)));
-        return fp ? _fseeki64(fp, std::bit_cast<std::int64_t>(c.x(1)), static_cast<int>(c.x(2))) : -1;
+        return fp ? r.seek_stream(r.descriptor(c.x(0)), std::bit_cast<std::int64_t>(c.x(1)), static_cast<int>(c.x(2))) : -1;
     });
     bind("ftell", [&](auto &c) -> std::int64_t {
         auto fp = r.file(r.descriptor(c.x(0)));
-        return fp ? _ftelli64(fp) : -1;
+        return fp ? r.stream_position(r.descriptor(c.x(0))) : -1;
     });
     bind("fsetpos", [&](auto &c) {
         auto fp = r.file(r.descriptor(c.x(0)));
-        return fp ? _fseeki64(fp, m.load<std::int64_t>(c.x(1)), SEEK_SET) : -1;
+        return fp ? r.seek_stream(r.descriptor(c.x(0)), m.load<std::int64_t>(c.x(1)), SEEK_SET) : -1;
     });
     bind("fgetpos", [&](auto &c) {
         auto fp = r.file(r.descriptor(c.x(0)));
         if (!fp)
             return -1;
-        m.store(c.x(1), _ftelli64(fp));
+        m.store(c.x(1), r.stream_position(r.descriptor(c.x(0))));
         return 0;
     });
     for (const auto *name : {"ferror", "feof", "fgetc"})
@@ -1105,8 +1130,9 @@ void install_bionic(Runtime &r) {
             if (c.current_import == "ferror")
                 return std::ferror(fp);
             if (c.current_import == "feof")
-                return std::feof(fp);
-            return std::fgetc(fp);
+                return int(r.stream_eof(r.descriptor(c.x(0))));
+            std::byte byte;
+            return r.read_stream(r.descriptor(c.x(0)), std::span(&byte, 1)) ? int(std::to_integer<unsigned char>(byte)) : EOF;
         });
     bind("fputc", [&](auto &c) {
         auto fp = r.file(r.descriptor(c.x(1)));
@@ -1123,14 +1149,22 @@ void install_bionic(Runtime &r) {
         if (!fp || !c.x(1))
             return 0;
         auto out = m.writable(c.x(0), c.x(1));
-        return std::fgets(reinterpret_cast<char *>(out.data()),
-                          static_cast<int>(std::min<std::uint64_t>(c.x(1), INT_MAX)), fp)
-                   ? c.x(0)
-                   : 0;
+        size_t count = 0;
+        while (count + 1 < out.size()) {
+            std::byte value;
+            if (!r.read_stream(r.descriptor(c.x(2)), std::span(&value, 1))) break;
+            out[count++] = value;
+            if (value == std::byte{'\n'}) break;
+        }
+        out[count] = std::byte{};
+        return count || out.size() == 1 ? c.x(0) : 0;
     });
     bind("ungetc", [&](auto &c) {
         auto fp = r.file(r.descriptor(c.x(1)));
-        return fp ? std::ungetc(static_cast<int>(c.x(0)), fp) : -1;
+        if (!fp || static_cast<int>(c.x(0)) == EOF) return -1;
+        std::byte value{static_cast<unsigned char>(c.x(0))};
+        r.unread_stream(r.descriptor(c.x(1)), std::span(&value, 1));
+        return int(std::to_integer<unsigned char>(value));
     });
     bind("setvbuf", [&](auto &c) {
         auto fp = r.file(r.descriptor(c.x(0)));
@@ -1226,27 +1260,6 @@ void install_bionic(Runtime &r) {
             return text.size();
         });
 
-    for (const auto *name : {"open", "__open_2"})
-        bind(name, [&](auto &c) {
-            auto flags = c.x(1);
-            auto filename = m.string(c.x(0));
-            if (filename == "/dev/urandom" || filename == "/dev/random" || filename == "/dev/null" ||
-                filename == "/dev/zero")
-                return static_cast<std::uint64_t>(r.open_device(filename));
-            bool writing = (flags & 3) != 0;
-            auto path = r.resolve_path(filename, writing);
-            if (!path) {
-                r.file_failure(filename, path.error());
-                return r.failure(c, path.error());
-            }
-            std::string mode = writing ? ((flags & 0x400) ? "ab+" : (flags & 0x200) ? "wb+" : "rb+") : "rb";
-            auto fd = r.open_file(*path, mode);
-            if (fd < 0 && writing && (flags & 0x40))
-                fd = r.open_file(*path, "wb+");
-            if (fd < 0)
-                r.file_failure(filename, 2);
-            return fd < 0 ? r.failure(c, 2) : static_cast<std::uint64_t>(fd);
-        });
     bind("close", [&](auto &c) { return r.close_file(static_cast<int>(c.x(0))) ? r.failure(c, 9) : 0; });
     for (const auto *name : {"read", "__read_chk", "write", "__write_chk"})
         bind(name, [&](auto &c) {
@@ -1276,7 +1289,7 @@ void install_bionic(Runtime &r) {
                 return r.failure(c, 9);
             if (reading) {
                 auto b = m.writable(c.x(1), c.x(2));
-                return static_cast<std::uint64_t>(std::fread(b.data(), 1, b.size(), fp));
+                return static_cast<std::uint64_t>(r.read_stream(static_cast<int>(c.x(0)), b));
             }
             auto b = m.readable(c.x(1), c.x(2));
             return static_cast<std::uint64_t>(std::fwrite(b.data(), 1, b.size(), fp));
@@ -1286,18 +1299,10 @@ void install_bionic(Runtime &r) {
             auto fp = r.file(static_cast<int>(c.x(0)));
             if (!fp)
                 return r.failure(c, 9);
-            if (_fseeki64(fp, std::bit_cast<std::int64_t>(c.x(1)), static_cast<int>(c.x(2))))
+            if (r.seek_stream(static_cast<int>(c.x(0)), std::bit_cast<std::int64_t>(c.x(1)), static_cast<int>(c.x(2))))
                 return r.failure(c, 22);
-            return static_cast<std::uint64_t>(_ftelli64(fp));
+            return static_cast<std::uint64_t>(r.stream_position(static_cast<int>(c.x(0))));
         });
-    bind("fsync", [&](auto &c) {
-        auto fp = r.file(static_cast<int>(c.x(0)));
-        return fp ? std::fflush(fp) : -1;
-    });
-    bind("ftruncate", [&](auto &c) {
-        auto fp = r.file(static_cast<int>(c.x(0)));
-        return fp ? _chsize_s(_fileno(fp), c.x(1)) : -1;
-    });
     bind("access", [&](auto &c) -> std::uint64_t {
         try {
             return fs::exists(r.path(m.string(c.x(0)))) ? 0 : r.failure(c, 2);
@@ -1327,17 +1332,6 @@ void install_bionic(Runtime &r) {
             return r.failure(c, !from ? from.error() : to.error());
         return MoveFileExW(from->c_str(), to->c_str(), MOVEFILE_REPLACE_EXISTING) ? 0 : r.failure(c, 13);
     });
-    bind("getcwd", [&](auto &c) -> Address {
-        auto text = "/data/data/" + r.options.package + "/files";
-        auto p = c.x(0) ? c.x(0) : m.allocate(text.size() + 1);
-        if (c.x(0) && c.x(1) <= text.size()) {
-            r.failure(c, 34);
-            return 0;
-        }
-        m.write(p, std::as_bytes(std::span(text)));
-        m.store(p + text.size(), char{});
-        return p;
-    });
     for (const auto *name : {"basename", "dirname"})
         bind(name, [&](auto &c) {
             auto text = m.string(c.x(0));
@@ -1348,96 +1342,7 @@ void install_bionic(Runtime &r) {
                                                                           : text.substr(0, pos));
             return m.string(out);
         });
-    auto stat_path = [&](const fs::path &path, Address out) {
-        std::error_code e;
-        auto status = fs::status(path, e);
-        if (e || !fs::exists(status))
-            return false;
-        auto b = m.writable(out, 128);
-        std::memset(b.data(), 0, b.size());
-        m.store(out + 16, std::uint32_t(fs::is_directory(status) ? 0040755 : 0100644));
-        m.store(out + 20, std::uint32_t{1});
-        m.store(out + 24, std::uint32_t{10000});
-        m.store(out + 28, std::uint32_t{10000});
-        auto size = fs::is_regular_file(status) ? fs::file_size(path) : 0;
-        m.store(out + 48, static_cast<std::int64_t>(size));
-        m.store(out + 56, std::int32_t{4096});
-        m.store(out + 64, static_cast<std::int64_t>((size + 511) / 512));
-        return true;
-    };
-    for (const auto *name : {"stat", "lstat", "stat64", "lstat64"})
-        bind(name, [&, stat_path](auto &c) {
-            auto path = r.resolve_path(m.string(c.x(0)));
-            if (!path)
-                return r.failure(c, path.error());
-            return stat_path(*path, c.x(1)) ? 0 : r.failure(c, 2);
-        });
-    bind("fstat", [&](auto &c) -> std::uint64_t {
-        auto fp = r.file(static_cast<int>(c.x(0)));
-        if (!fp)
-            return r.failure(c, 9);
-        auto pos = _ftelli64(fp);
-        _fseeki64(fp, 0, SEEK_END);
-        auto size = _ftelli64(fp);
-        _fseeki64(fp, pos, SEEK_SET);
-        auto b = m.writable(c.x(1), 128);
-        std::memset(b.data(), 0, b.size());
-        m.store(c.x(1) + 16, std::uint32_t{0100644});
-        m.store(c.x(1) + 48, size);
-        m.store(c.x(1) + 56, std::int32_t{4096});
-        return 0;
-    });
-    for (const auto *name : {"chmod", "fchmod", "fchown", "lchown", "utime", "utimes"})
-        bind(name, [&](auto &c) { return r.failure(c, 38); });
-    bind("fcntl", [&](auto &c) -> std::uint64_t {
-        if (!r.file(static_cast<int>(c.x(0))))
-            return r.failure(c, 9);
-        if (c.x(1) == 1 || c.x(1) == 3)
-            return 0;
-        if (c.x(1) == 2 || c.x(1) == 4)
-            return 0;
-        r.message("[Bionic] Unsupported fcntl command " + std::to_string(c.x(1)) +
-                  "; file locking is not implemented");
-        return r.failure(c, 38);
-    });
-    bind("ioctl", [&](auto &c) { return r.failure(c, 25); });
-    for (const auto *name : {"mmap", "mmap64"})
-        bind(name, [&](auto &c) -> Address {
-            if (!c.x(1) || (c.x(3) & 0x10))
-                return r.failure(c, 22);
-            unsigned p = (c.x(2) & 1 ? guest::Read : 0) | (c.x(2) & 2 ? guest::Write : 0) |
-                         (c.x(2) & 4 ? guest::Execute : 0);
-            auto size = align_up(c.x(1), 4096);
-            if (c.x(3) & 0x20)
-                return m.allocate(size, p, 4096);
-            auto fp = r.file(static_cast<int>(c.x(4)));
-            if (!fp)
-                return r.failure(c, 9);
-            if (c.x(5) % 4096)
-                return r.failure(c, 22);
-            auto address = m.allocate(size, guest::Read | guest::Write, 4096);
-            auto position = _ftelli64(fp);
-            if (_fseeki64(fp, std::bit_cast<std::int64_t>(c.x(5)), SEEK_SET)) {
-                m.release(address);
-                return r.failure(c, 22);
-            }
-            auto dest = m.writable(address, c.x(1));
-            std::fread(dest.data(), 1, dest.size(), fp);
-            _fseeki64(fp, position, SEEK_SET);
-            m.protect(address, size, p);
-            return address;
-        });
-    bind("munmap", [&](auto &c) {
-        m.release(c.x(0));
-        return 0;
-    });
-    bind("mprotect", [&](auto &c) {
-        unsigned p = (c.x(2) & 1 ? guest::Read : 0) | (c.x(2) & 2 ? guest::Write : 0) |
-                     (c.x(2) & 4 ? guest::Execute : 0);
-        m.protect(c.x(0), c.x(1), p);
-        c.invalidate(c.x(0), c.x(1));
-        return 0;
-    });
+
     bind("madvise", [](auto &) { return 0; });
     bind("mlock", [](auto &) { return 0; });
 
@@ -1722,21 +1627,28 @@ void install_bionic(Runtime &r) {
         return value;
     });
     for (const auto *name : {"signal", "sigaction"})
-        bind(name, [&](auto &c) { return r.failure(c, 38); });
-    bind("raise", [&](auto &c) { return r.failure(c, 38); });
+        r.bind_suppressed(name, "unrelated-posix", "SIG_ERR or -1 / ENOSYS; host signal handlers remain untouched",
+                          [&](auto &c) { return r.failure(c, 38); });
+    r.bind_suppressed("raise", "unrelated-posix", "-1 / ENOSYS; no host signal is raised",
+                      [&](auto &c) { return r.failure(c, 38); });
     for (const auto *name :
          {"socket",      "connect",     "send",        "recv",          "sendto", "recvfrom",
           "sendmmsg",    "recvmmsg",    "bind",        "listen",        "accept", "getsockopt",
-          "setsockopt",  "getsockname", "getpeername", "shutdown",      "poll",   "select",
-          "getnameinfo", "inet_pton",   "inet_ntop",   "if_nametoindex"})
-        bind(name, [&](auto &c) { return r.failure(c, 101); });
-    bind("getaddrinfo", [&](auto &c) {
+          "setsockopt",  "getsockname", "getpeername", "shutdown", "accept4"})
+        r.bind_suppressed(name, "online-network", "-1 / ENETUNREACH; no socket or network request",
+                          [&](auto &c) { return r.failure(c, 101); });
+    r.bind_suppressed("getnameinfo", "online-network", "Android EAI_NONAME (8); no DNS lookup",
+                      [](auto &) { return 8; });
+    r.bind_suppressed("if_nametoindex", "online-network", "0 / ENODEV; no Android network interface",
+                      [&](auto &c) { r.failure(c, 19); return 0; });
+    r.bind_suppressed("getaddrinfo", "online-network", "Android EAI_NONAME (8), null result; no DNS lookup", [&](auto &c) {
         if (c.x(3))
             m.store(c.x(3), Address{});
-        return -3;
+        return 8;
     });
     bind("freeaddrinfo", [](auto &) { return 0; });
-    bind("gethostbyname", [](auto &) -> Address { return 0; });
+    r.bind_suppressed("gethostbyname", "online-network", "null; no DNS lookup",
+                      [](auto &) -> Address { return 0; });
     bind("gai_strerror",
          [&](auto &) { return m.string("Network services unavailable in offline runtime"); });
     bind("strerror", [&](auto &c) { return m.string("Android errno " + std::to_string(c.x(0))); });

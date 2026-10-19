@@ -55,6 +55,8 @@ class Jni {
                               std::uint64_t budget = 200'000'000,
                               std::chrono::milliseconds timeout = std::chrono::seconds(30));
     void hook(std::string class_name, std::string name, std::string signature, JavaHandler handler);
+    void hook_suppressed(std::string class_name, std::string name, std::string signature,
+                         std::string category, std::string behavior, JavaHandler handler);
     void field(std::string class_name, std::string name, std::string signature, std::uint64_t value);
     Address native(std::string_view class_name, std::string_view name, std::string_view signature) const;
     void register_native(std::string class_name, std::string name, std::string signature, Address target);
@@ -153,6 +155,10 @@ class Runtime {
     std::vector<std::string> log;
     void bind(std::string name, std::function<std::uint64_t(guest::Cpu &)> handler);
     void bind_void(std::string name, guest::Handler handler);
+    void bind_suppressed(std::string name, std::string category, std::string behavior,
+                         std::function<std::uint64_t(guest::Cpu &)> handler);
+    void record_suppression(std::string name, std::string category, std::string behavior);
+    void suppressed_call(std::string_view name);
     void unavailable_imports();
     void initialize_libraries();
     std::vector<std::string> java_libraries;
@@ -175,12 +181,23 @@ class Runtime {
     void wait_callbacks(std::chrono::milliseconds timeout = std::chrono::seconds(30));
     Json report() const;
     int open_file(const fs::path &path, std::string_view mode);
+    int adopt_file(FILE *file, const fs::path &path, int flags);
+    int open_directory(const fs::path &path);
+    std::optional<fs::path> descriptor_path(int descriptor) const;
+    std::expected<std::string, int> absolute_guest_path(std::string_view path, int directory = -100) const;
+    std::string working_directory() const;
+    void working_directory(std::string value);
     FILE *file(int descriptor) const;
     int close_file(int descriptor);
     int open_device(std::string name);
     std::string device(int descriptor) const;
     Address file_handle(int descriptor);
     int descriptor(Address handle) const;
+    size_t read_stream(int descriptor, std::span<std::byte> bytes);
+    void unread_stream(int descriptor, std::span<const std::byte> bytes);
+    std::int64_t stream_position(int descriptor) const;
+    int seek_stream(int descriptor, std::int64_t offset, int origin);
+    bool stream_eof(int descriptor) const;
     mutable std::recursive_mutex state_mutex;
     std::map<std::uint64_t, std::uint64_t> syscall_counts;
     std::map<std::string, std::map<int, std::uint64_t>> file_failures;
@@ -201,6 +218,8 @@ class Runtime {
     std::map<unsigned, Address> key_destructors;
     std::map<Address, Address> emutls;
     std::map<Address, Address> file_handles;
+    std::map<int, int> descriptor_flags;
+    std::function<void(int)> closing_file;
 
   private:
     std::atomic_bool thread_failure_{};
@@ -212,15 +231,24 @@ class Runtime {
     GuestThread *callback_worker_{};
     bool callback_active_{};
     std::map<int, FILE *> files_;
+    std::map<int, fs::path> file_paths_, directory_paths_;
+    std::map<int, std::deque<std::byte>> unread_bytes_;
+    std::set<Address> owned_file_handles_;
+    std::string working_directory_;
+    struct Suppression { std::string category, behavior; std::uint64_t calls{}; };
+    std::map<std::string, Suppression> suppressed_;
     std::vector<std::unique_ptr<Archive>> asset_packages_;
     std::map<std::string, AssetFile> assets_;
     std::map<int, std::string> devices_;
     int next_file_ = 3;
 };
 void install_bionic(Runtime &runtime);
+void install_bionic_offline(Runtime &runtime);
+void install_bionic_scan(Runtime &runtime);
 void install_java_platform(Runtime &runtime);
 void install_java_values(Runtime &runtime);
 std::string format_guest(guest::Cpu &cpu, Address format, size_t first_argument, Address va_list = 0);
+std::string format_binary128(std::array<std::uint64_t, 2> bits, std::string_view spec, char conversion);
 class GameAdapter {
   public:
     virtual ~GameAdapter() = default;

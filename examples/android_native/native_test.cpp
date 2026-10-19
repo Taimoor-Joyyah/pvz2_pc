@@ -6,6 +6,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <expected>
 #include <jni.h>
 #include <pthread.h>
@@ -35,6 +39,66 @@ int formatting_contract() {
         return 61;
     if (std::swprintf(output, 0, L"x") >= 0 || errno != EINVAL)
         return 62;
+    return 0;
+}
+int scanning_arguments(const char *input, const char *format, ...) {
+    va_list arguments;
+    va_start(arguments, format);
+    auto result = std::vsscanf(input, format, arguments);
+    va_end(arguments);
+    return result;
+}
+int offline_contract(const char *save) {
+    static_assert(sizeof(long) == 8 && sizeof(long double) == 16);
+    int number{}, count{};
+    long large{};
+    double real{};
+    char word[8]{};
+    if (scanning_arguments("42 4294967298 1.25 seed", "%d %ld %lf %7s%n", &number, &large, &real, word, &count) != 4 ||
+        number != 42 || large != 4294967298l || real != 1.25 || std::strcmp(word, "seed") || count != 23)
+        return 70;
+    wchar_t plant{};
+    if (std::swscanf(L"\U0001f331 4294967298", L"%lc %ld", &plant, &large) != 2 || plant != 0x1f331 || large != 4294967298l)
+        return 71;
+    long double quad{};
+    char *end{};
+    const char *precise = "0x1.0000000000000000000000000001p0";
+    quad = std::strtold(precise, &end);
+    const unsigned long long expected[2]{1, 0x3fff000000000000ull};
+    if (std::memcmp(&quad, expected, 16) || *end) return 72;
+    quad = 0;
+    if (std::sscanf(precise, "%Lf", &quad) != 1 || std::memcmp(&quad, expected, 16)) return 73;
+    char formatted[128];
+    if (std::snprintf(formatted, sizeof(formatted), "%.28La", quad) != 35 ||
+        std::strcmp(formatted, "0x1.0000000000000000000000000001p+0")) return 84;
+    if (std::snprintf(formatted, sizeof(formatted), "%+.2Lf", std::strtold("1.25", nullptr)) != 5 || std::strcmp(formatted, "+1.25")) return 85;
+    if (std::snprintf(formatted, sizeof(formatted), "%.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f %d %.2Lf",
+                      1., 2., 3., 4., 5., 6., 7., 8., 9., 42, std::strtold("1.25", nullptr)) != 25 ||
+        std::strcmp(formatted, "1 2 3 4 5 6 7 8 9 42 1.25")) return 86;
+    wchar_t *wide_end{};
+    if (std::wcstoll(L"-4294967298x", &wide_end, 10) != -4294967298ll || *wide_end != L'x') return 74;
+    char path[1024];
+    std::snprintf(path, sizeof(path), "%s.offline", save);
+    int fd = openat(AT_FDCWD, path, O_CREAT | O_TRUNC | O_RDWR, 0600);
+    if (fd < 0) return 75;
+    auto stream = fdopen(fd, "r+");
+    if (!stream || std::fprintf(stream, "42 seed") != 7 || std::fseek(stream, 0, SEEK_SET) ||
+        std::fscanf(stream, "%d %7s", &number, word) != 2 || number != 42 || std::strcmp(word, "seed")) return 76;
+    if (std::fseek(stream, 0, SEEK_SET) || std::fputwc(0x1f331, stream) != 0x1f331 ||
+        std::fseek(stream, 0, SEEK_SET) || std::getwc(stream) != 0x1f331 ||
+        std::ungetwc(0x1f331, stream) != 0x1f331 || std::getwc(stream) != 0x1f331) return 77;
+    if (std::fclose(stream)) return 78;
+    char *canonical = realpath(path, nullptr);
+    if (!canonical || canonical[0] != '/') return 79;
+    std::free(canonical);
+    if (truncate(path, 3)) return 80;
+    struct stat info{};
+    if (stat(path, &info) || info.st_size != 3 || !info.st_ino || unlinkat(AT_FDCWD, path, 0)) return 81;
+    void *mapping = mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mapping == MAP_FAILED) return 82;
+    *static_cast<int *>(mapping) = 42;
+    mapping = mremap(mapping, 4096, 8192, MREMAP_MAYMOVE);
+    if (mapping == MAP_FAILED || *static_cast<int *>(mapping) != 42 || munmap(mapping, 8192)) return 83;
     return 0;
 }
 void object_realized(SLObjectItf, const void *context, SLuint32 event, SLresult result, SLuint32 state,
@@ -170,6 +234,8 @@ extern "C" JNIEXPORT int acp_native_test(JNIEnv *env, const char *save_path) {
         return formatting;
     if (auto audio = audio_contract())
         return audio;
+    if (auto offline = offline_contract(save_path))
+        return offline;
     if (constructed != 1 || (loaded != 0 && loaded != 1))
         return 1;
     if (positive(42).value_or(0) != 42 || positive(-1).error() != 17)

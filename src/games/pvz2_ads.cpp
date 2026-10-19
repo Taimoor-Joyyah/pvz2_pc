@@ -70,10 +70,13 @@ void install_pvz2_ads(android::Runtime &r) {
     });
     for (const auto *type : {disabled, "csdk/gluads/IAdvertising"}) {
         for (const auto &[name, signature] : disabled_methods)
-            j.hook(type, name, signature, [](auto &) { return 0; });
-        j.hook(type, "isLoaded", "(Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;)Z",
+            j.hook_suppressed(type, name, signature, "online-advertising", "SDK DummyAdvertising no-op; no ad request",
+                              [](auto &) { return 0; });
+        j.hook_suppressed(type, "isLoaded", "(Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;)Z",
+                          "online-advertising", "false; no ad loaded",
                [](auto &) { return false; });
-        j.hook(type, "getReward", "(Ljava/lang/String;Ljava/lang/String;)Lcsdk/gluads/Reward;",
+        j.hook_suppressed(type, "getReward", "(Ljava/lang/String;Ljava/lang/String;)Lcsdk/gluads/Reward;",
+                          "online-advertising", "null; no ad reward",
                [](auto &) { return 0; });
         j.hook(type, "setAdvertisingListener", "(Lcsdk/gluads/IAdvertisingListener;)V", [&j, &r](auto &c) {
             std::lock_guard lock(r.state_mutex);
@@ -83,8 +86,9 @@ void install_pvz2_ads(android::Runtime &r) {
             return 0;
         });
         for (bool showing : {false, true})
-            j.hook(type, showing ? "show" : "load",
+            j.hook_suppressed(type, showing ? "show" : "load",
                    "(Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;)V",
+                   "online-advertising", "Unavailable placement callback; no ad or reward",
                    [&j, &r, native_data, showing](auto &c) {
                        Address data;
                        {

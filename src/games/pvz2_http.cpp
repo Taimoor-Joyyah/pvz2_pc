@@ -76,8 +76,9 @@ void install_pvz2_http(android::Runtime &r) {
         });
         return std::uint64_t{};
     };
-    hook("Start", "()V", start);
-    hook("run", "()V", start);
+    for (const auto *name : {"Start", "run"})
+        j.hook_suppressed(transaction, name, "()V", "online-http",
+                          "One asynchronous HttpTransactionError callback per transaction; no request sent", start);
     hook("Release", "()V", [&j, &r](auto &c) {
         Address data;
         {

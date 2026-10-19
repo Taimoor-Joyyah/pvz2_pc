@@ -46,7 +46,8 @@ std::map<std::string, Address> install_pvz2_environment(android::Runtime &r, Add
     j.get(network).fields["component_id"] = "com.ea.nimble.network";
     hook("com/ea/nimble/Network", "getComponent", "()Lcom/ea/nimble/INetwork;",
          [&j, network](auto &) { return j.local_ref(network); });
-    hook("com/ea/nimble/Network", "getHttpProxy", "()Ljava/lang/String;", [](auto &) { return 0; });
+    j.hook_suppressed("com/ea/nimble/Network", "getHttpProxy", "()Ljava/lang/String;",
+                      "online-network", "null; no Android HTTP proxy", [](auto &) { return 0; });
     hook("com/ea/nimble/Utility", "readFile", "(Ljava/lang/String;)Ljava/lang/String;",
          [&j, &r](auto &c) -> Address {
              auto name = j.text(c.arguments[0]);
@@ -61,10 +62,13 @@ std::map<std::string, Address> install_pvz2_environment(android::Runtime &r, Add
              return j.string(std::string(reinterpret_cast<const char *>(bytes.data()), bytes.size()));
          });
     for (const auto *target : {"com/ea/nimble/INetwork", network_type}) {
-        hook(target, "getStatus", "()Lcom/ea/nimble/Network$Status;",
+        j.hook_suppressed(target, "getStatus", "()Lcom/ea/nimble/Network$Status;",
+             "online-network", "Network.Status.NONE; offline gameplay remains available",
              [&j, none = statuses[1]](auto &) { return j.local_ref(none); });
-        hook(target, "isNetworkWifi", "()Z", [](auto &) { return false; });
-        hook(target, "forceRedetectNetworkStatus", "()V", [](auto &) { return 0; });
+        j.hook_suppressed(target, "isNetworkWifi", "()Z", "online-network", "false; Android Wi-Fi unavailable",
+                          [](auto &) { return false; });
+        j.hook_suppressed(target, "forceRedetectNetworkStatus", "()V", "online-network", "No-op; keep offline status",
+                          [](auto &) { return 0; });
     }
     auto device_file = r.options.data / "preferences/pc-runtime-device.json";
     std::string device_id;
