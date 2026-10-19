@@ -4,6 +4,12 @@ A C++23 Windows x64 runtime for loading ARM64 Android native games. The Android 
 
 **Development status:** the runtime is experimental. A successful build or CPU test is not proof that PVZ2 is playable. See [the implementation status](docs/status.md) for the current validation boundary and remaining work.
 
+## AI Disclosure
+
+This project is developed with substantial assistance from OpenAI Codex under the maintainer's direction. AI assistance has been used to write and modify first-party runtime code, tooling, tests and documentation, investigate bugs, run builds and automated tests, and perform limited interactive gameplay checks.
+
+Validation results apply to the specific tests and sessions documented in [the implementation status](docs/status.md) and [the issue tracker](docs/issues.md). They do not establish complete Android compatibility or verification of every gameplay path. Third-party libraries and original game content have separate provenance; see [the third-party notices](THIRD_PARTY_NOTICES.md).
+
 ## Build
 
 Install Visual Studio's C++ desktop tools (including the Windows SDK), **MSVC toolset 14.51.36231 / compiler 19.51.36257.0**, CMake 3.30 or newer, and Git. The validated host build uses CMake 4.2.1. From PowerShell:
