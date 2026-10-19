@@ -36,6 +36,8 @@ The compiler version is checked during configuration. An explicit `-DACP_ALLOW_U
 
 The current issue list and validation sessions are tracked in [docs/issues.md](docs/issues.md).
 
+Performance findings, measurement limits and the optimization roadmap are in [docs/performance-review.md](docs/performance-review.md).
+
 ## Install
 
 After the Release build, package the graphics DLLs once, then install the portable application:
