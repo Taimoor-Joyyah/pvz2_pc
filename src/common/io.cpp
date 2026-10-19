@@ -2,8 +2,10 @@
 
 #include <Windows.h>
 
+#include <atomic>
 #include <bcrypt.h>
 #include <chrono>
+#include <thread>
 
 namespace acp {
 Bytes read_bytes(const fs::path &path, std::uint64_t limit) {
@@ -110,14 +112,25 @@ std::wstring widen(std::string_view value) {
 }
 void write_json(const fs::path &path, const Json &value) {
     auto text = value.dump(2) + "\n";
+    static std::atomic_uint64_t sequence{};
     auto temp = path;
-    temp += L".tmp";
+    temp += std::format(L".tmp.{}.{}", GetCurrentProcessId(), sequence.fetch_add(1));
     write_bytes(temp, std::as_bytes(std::span(text)));
-    if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        std::error_code ignored;
-        fs::remove(temp, ignored);
-        throw Error("Cannot publish JSON: " + utf8(path));
+    DWORD failure{};
+    for (unsigned attempt = 0; attempt < 50; ++attempt) {
+        if (MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            return;
+        failure = GetLastError();
+        // Readers and scanners may briefly hold an existing file without delete sharing.
+        // Keep the last good save intact and retry the atomic replacement.
+        if (failure != ERROR_SHARING_VIOLATION && failure != ERROR_LOCK_VIOLATION &&
+            failure != ERROR_ACCESS_DENIED)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+    std::error_code ignored;
+    fs::remove(temp, ignored);
+    throw Error("Cannot publish JSON: " + utf8(path) + " (Windows error " + std::to_string(failure) + ")");
 }
 Json read_json(const fs::path &path) {
     auto bytes = read_bytes(path, 32 << 20);

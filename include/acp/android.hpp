@@ -102,6 +102,8 @@ class Graphics {
     void open(void *window, const std::optional<fs::path> &angle_directory);
     void present();
     void resize(int width, int height);
+    // Keep an Android surface stable while the desktop drawable changes size.
+    void set_guest_size(int width, int height);
     void finish_frame();
     Bytes read_rgba(int width, int height);
     Json describe() const;

@@ -1,6 +1,8 @@
 # Implementation and validation status
 
-The implementation is in active development. **Interactive PVZ2 gameplay has reached Ancient Egypt Day 2, and a later launch restored the saved world state. Full release qualification is still incomplete.**
+The implementation is in active development. **Interactive PVZ2 has reached the Ancient Egypt Day 3 tutorial, and saved world state has restored across launches. Full release qualification is still incomplete.**
+
+The 2026-10-19 maintenance pass added aspect-preserving desktop resizing with a stable Android render surface and matching touch coordinates, disabled Windows process ghosting, and hardened atomic JSON replacement. All five CTest suites and the ANGLE letterbox/pixel smoke test passed. An interactive 7,994-frame session ended cleanly; a portrait-window restart restored the same QA profile, ignored bar clicks, entered Adventure and loaded Ancient Egypt Day 3. Source archives were removed only after comparison with the retained imported installation. Billing's offline shop gate, loading stalls and other observed limits are tracked in [issues.md](issues.md); failed real-money purchases are not converted into paid-item grants.
 
 The source includes package inspection/import, an ARM64 ELF loader and Dynarmic backend, guest-call/import marshalling, JNI services, Android storage mapping, an initial Bionic compatibility library, ANGLE graphics marshalling, OpenSL ES audio bridging, and a separate PopCap adapter.
 

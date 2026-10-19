@@ -18,6 +18,8 @@ For CLion, select the Visual Studio x64 toolchain and the `windows-release` CMak
 
 The compiler version is checked during configuration. An explicit `-DACP_ALLOW_UNPINNED_TOOLCHAIN=ON` CMake override permits testing another compiler version; that build needs separate validation.
 
+The current issue list and validation sessions are tracked in [docs/issues.md](docs/issues.md).
+
 ## Google Play Games and purchases
 
 Google Play Games is disabled. Gameplay and saves use the local profile; achievements and leaderboard calls follow the APK's signed-out behavior without requiring a Google account or Play Services. In-game achievement tracking still belongs to the original game.
@@ -41,6 +43,8 @@ Use `--config PATH` to select a different INI. The optional `catalog_file` is a 
 ```
 
 Types are `consumable`, `nonconsumable` or `subscription`; `title` and `description` are optional. Simulated prices are zero and labeled `Local test`. Product IDs must match the game's offers. This catalog supplies platform metadata; it does not download missing shop offers or create new game content. Direct purchase requests can also introduce a previously unknown SKU. Purchase callbacks and recovery have dedicated JNI tests; the complete in-game shop flow still needs validation with matching offer data.
+
+An in-game **internet connection** error can happen before a request reaches the local billing provider. `auto_complete` does not turn on network services or bypass connectivity checks. The runtime now logs empty catalog queries and records when `purchaseItem` actually reaches the provider, so an offline shop rejection can be distinguished from a local callback failure. Failed online purchases do not grant paid items. The maintenance session inspected shop rendering without submitting a checkout; it did not validate in-game purchase completion.
 
 ## Inspect and import your game
 
@@ -74,6 +78,8 @@ The graphics bridge loads standalone x64 ANGLE DLLs. It does not start an Androi
 The packaging helper verifies the recorded hashes before copying. Another ANGLE build can be selected explicitly with `--angle-dir DIR`; `-AllowDifferentBuild` permits packaging an alternative for testing. A development fallback also locates ANGLE in the installed Android SDK. Distribute the packaged `angle` directory with the executable, together with the applicable dependency notices.
 
 During a working game session, left click maps to touch, dragging maps to touch movement, Escape maps to Android Back, and F11 toggles fullscreen. Keyboard text events use the game's Java event protocol. These integrations require gameplay validation before a release is qualified.
+
+The desktop window can resize freely. PVZ2 renders to a stable 1280 x 720 Android surface, scaled to fit the current drawable while preserving its aspect ratio; unused space is black. Mouse input follows the displayed image, clicks in the black bars are ignored, and resizing or losing focus cancels an active drag. Use `--width 720 --height 960` to start with a custom window size. Presentation scaling requires ANGLE OpenGL ES 3, provided by the packaged build. Windows ghosting is disabled before host window creation; long synchronous guest loading calls can still delay input.
 
 Use `--profile NAME` for separate save storage under `ROOT/profiles/PACKAGE/NAME`. The default profile stays under `ROOT/userdata/PACKAGE`. To reproduce input in a bounded regression run, pass `--input replay.json`:
 

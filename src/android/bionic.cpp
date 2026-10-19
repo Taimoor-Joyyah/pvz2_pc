@@ -1396,6 +1396,8 @@ void install_bionic(Runtime &r) {
             return 0;
         if (c.x(1) == 2 || c.x(1) == 4)
             return 0;
+        r.message("[Bionic] Unsupported fcntl command " + std::to_string(c.x(1)) +
+                  "; file locking is not implemented");
         return r.failure(c, 38);
     });
     bind("ioctl", [&](auto &c) { return r.failure(c, 25); });

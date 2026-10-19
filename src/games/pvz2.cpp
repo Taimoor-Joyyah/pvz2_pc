@@ -9,6 +9,7 @@ constexpr std::string_view activity = "com/popcap/SexyAppFramework/SexyAppFramew
 class Pvz2 final : public android::GameAdapter {
     Address activity_{}, surface_{}, http_proxy_{};
     int width_ = 1280, height_ = 720;
+    host::Viewport viewport_{0, 0, 1280, 720};
     bool down_{}, keyboard_{};
     std::atomic_bool quitting_{};
     Pvz2Options options_;
@@ -616,6 +617,10 @@ class Pvz2 final : public android::GameAdapter {
     }
     void start(android::Runtime &r) override {
         r.phase = "game-initialize";
+        r.graphics->set_guest_size(width_, height_);
+        auto [drawable_width, drawable_height] = r.host->drawable_size();
+        r.graphics->resize(drawable_width, drawable_height);
+        viewport_ = host::fit_viewport(drawable_width, drawable_height, width_, height_);
         const std::string signature =
             "(Lcom/popcap/SexyAppFramework/AndroidSurfaceView;Lcom/popcap/SexyAppFramework/"
             "AndroidHttpProxy;Lcom/popcap/SexyAppFramework/cloud/Cloud;Lcom/popcap/SexyAppFramework/"
@@ -653,15 +658,28 @@ class Pvz2 final : public android::GameAdapter {
         call(r, surface, "Native_onDrawFrame", "()V");
     }
     void event(android::Runtime &r, const host::Event &event) override {
-        input_.push(event);
         if (event.type == host::EventType::Resize && event.width > 0 && event.height > 0) {
-            width_ = event.width;
-            height_ = event.height;
-            r.graphics->resize(width_, height_);
-            call(r, surface, "Native_onSurfaceChanged", "(II)V",
-                 {static_cast<std::uint64_t>(width_), static_cast<std::uint64_t>(height_)});
+            // A desktop resize is presentation-only. Reinitializing Android resources
+            // for each intermediate drag size breaks the native layout and touch basis.
+            if (down_)
+                input_.push({host::EventType::Focus, 0, 0, 0, 0, false});
+            down_ = false;
+            viewport_ = host::fit_viewport(event.width, event.height, width_, height_);
+            r.graphics->resize(event.width, event.height);
         }
+        auto mapped = event;
+        if (event.type == host::EventType::PointerDown || event.type == host::EventType::PointerMove ||
+            event.type == host::EventType::PointerUp) {
+            if ((event.type == host::EventType::PointerDown && !viewport_.contains(event.x, event.y)) ||
+                (event.type != host::EventType::PointerDown && !down_))
+                return;
+            mapped.x = std::clamp(viewport_.guest_x(event.x) * width_, 0.f, float(width_ - 1));
+            mapped.y = std::clamp(viewport_.guest_y(event.y) * height_, 0.f, float(height_ - 1));
+        }
+        input_.push(mapped);
         if (event.type == host::EventType::Focus) {
+            if (!event.focused)
+                down_ = false;
             glu_lifecycle_(event.focused);
             {
                 std::lock_guard lock(r.state_mutex);

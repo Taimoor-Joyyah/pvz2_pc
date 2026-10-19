@@ -13,7 +13,7 @@ struct Arguments {
         require(argc >= 2, "Usage: pvz2pc inspect|import|list|run [--apk FILE] [--obb FILE] [--root DIR] "
                            "[--out FILE] [--version ID] [--probe] [--frames N] [--capture PNG] "
                            "[--capture-every N] [--input FILE] [--live-input] [--profile NAME] [--config "
-                           "INI] [--angle-dir DIR]");
+                           "INI] [--angle-dir DIR] [--width N] [--height N]");
         command = narrow(argv[1]);
         for (int i = 2; i < argc; ++i) {
             auto key = narrow(argv[i]);
@@ -94,6 +94,10 @@ int wmain(int argc, wchar_t **argv) {
         }
         require(args.command == "run", "Unknown command: " + args.command);
         auto limit = args.count("--frames");
+        auto window_width = args.get("--width") ? args.count("--width") : 1280;
+        auto window_height = args.get("--height") ? args.count("--height") : 720;
+        require(window_width >= 64 && window_width <= 8192 && window_height >= 64 && window_height <= 8192,
+                "Window width and height must be between 64 and 8192");
         auto capture = args.get("--capture");
         auto capture_every = args.count("--capture-every");
         require(!args.get("--capture-every") || (capture && capture_every > 0),
@@ -175,12 +179,13 @@ int wmain(int argc, wchar_t **argv) {
         std::optional<fs::path> angle;
         if (auto path = args.get("--angle-dir"))
             angle = path_from_utf8(*path);
-        r.host->open_window("PVZ2 PC - experimental compatibility runtime", 1280, 720);
+        r.host->open_window("PVZ2 PC - experimental compatibility runtime", static_cast<int>(window_width),
+                            static_cast<int>(window_height));
         r.graphics->open(r.host->native_window(), angle);
         r.initialize_libraries();
         adapter->start(r);
         bool captured = false;
-        int drawable_width = 1280, drawable_height = 720;
+        auto [drawable_width, drawable_height] = r.host->drawable_size();
         std::vector<double> frame_times;
         bool quit = false, replay_quit = false;
         while (!quit && !adapter->quit_requested()) {
@@ -210,6 +215,7 @@ int wmain(int argc, wchar_t **argv) {
             if (quit)
                 break;
             adapter->frame(r);
+            r.graphics->finish_frame();
             r.check_threads();
             if (limit && frames + 1 == limit)
                 r.wait_callbacks();

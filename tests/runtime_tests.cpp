@@ -368,6 +368,14 @@ void jni_and_storage() {
     auto v = host::fit_viewport(1920, 1200, 1280, 720);
     check(v.width == 1920 && v.height == 1080 && v.y == 60, "Aspect ratio viewport");
     check(v.guest_x(960) == 0.5f && v.guest_y(600) == 0.5f, "Viewport input mapping");
+    check(!v.contains(960, 59) && v.contains(0, 60) && !v.contains(1920, 600) && !v.contains(960, 1140),
+          "Black bars and exclusive viewport edges cannot start a touch");
+    auto portrait = host::fit_viewport(720, 1280, 1280, 720);
+    check(portrait.width == 720 && portrait.height == 405 && portrait.y == 437 &&
+              portrait.guest_x(360) == 0.5f && portrait.guest_y(639.5f) == 0.5f,
+          "Portrait windows preserve landscape aspect and map touch through letterboxing");
+    auto tiny = host::fit_viewport(1, 1, 1280, 720);
+    check(tiny.width == 1 && tiny.height == 1, "Very small drawables have a usable viewport");
     check(r.cpu.call(r.linker.symbol("malloc"), std::array<std::uint64_t, 1>{64}) != 0,
           "Android malloc bridge");
     auto seconds = m.allocate(8), calendar = m.allocate(56);
@@ -536,6 +544,26 @@ int main() {
         auto hash_file = fs::current_path() / "test-artifacts/hash.bin";
         write_bytes(hash_file, content);
         check(sha256(hash_file) == sha256(content), "Streaming file hashes match in-memory hashes");
+        auto json_file = fs::current_path() / "test-artifacts/atomic.json";
+        write_json(json_file, Json{{"generation", 0}});
+        std::ifstream reader(json_file, std::ios::binary);
+        auto replacement =
+            std::async(std::launch::async, [&] { write_json(json_file, Json{{"generation", 1}}); });
+        replacement.wait_for(std::chrono::milliseconds(30));
+        reader.close();
+        replacement.get();
+        check(read_json(json_file).at("generation") == 1,
+              "Atomic JSON replacement survives a reader holding the old file open");
+        std::vector<std::future<void>> writers;
+        for (unsigned writer = 0; writer < 8; ++writer)
+            writers.push_back(std::async(std::launch::async, [&, writer] {
+                for (unsigned generation = 0; generation < 8; ++generation)
+                    write_json(json_file, Json{{"writer", writer}, {"generation", generation}});
+            }));
+        for (auto &writer : writers)
+            writer.get();
+        check(read_json(json_file).at("generation") == 7,
+              "Concurrent atomic JSON writers publish complete documents without sharing temp files");
         check(is_safe_relative("assets/file.txt"), "Safe relative path");
         check(!is_safe_relative("../outside"), "Archive traversal rejection");
         rejects([] { android::parse_manifest(Bytes(16)); }, "Malformed manifests must fail");

@@ -147,6 +147,9 @@ struct Billing : std::enable_shared_from_this<Billing> {
         hook(api, "getAvailableCatalogItems", "()Ljava/util/List;", [](auto &b, auto &) -> Address {
             if (!b.enabled())
                 return 0;
+            if (b.catalog.empty())
+                b.r.message(
+                    "[Local billing] Catalog is empty; auto_complete does not download shop offers");
             auto result = b.j.object("java/util/ArrayList");
             for (const auto &[sku, entry] : b.catalog) {
                 auto value = b.j.object("pc/pvz2/LocalCatalogItem");
@@ -181,6 +184,7 @@ struct Billing : std::enable_shared_from_this<Billing> {
              "(Ljava/lang/String;Lcom/ea/nimble/mtx/INimbleMTX$PurchaseTransactionCallback;Ljava/lang/"
              "String;)Lcom/ea/nimble/Error;",
              [](auto &b, auto &c) -> Address {
+                 b.r.message("[Local billing] purchaseItem reached the local provider");
                  if (!b.enabled())
                      return b.error("Purchases are disabled in game.ini");
                  auto sku = b.j.text(c.arguments[0]);
@@ -349,6 +353,9 @@ Address install_pvz2_billing(android::Runtime &r, const Pvz2Options &options,
     r.message(billing->enabled()
                   ? "[PopCap] Local purchase simulation enabled; no real payments or store receipts"
                   : "[PopCap] Purchases disabled in game.ini");
+    if (billing->enabled())
+        r.message("[Local billing] Network remains offline. Native shop connectivity checks can reject "
+                  "an offer before purchaseItem is called; this mode does not bypass those checks.");
     return component;
 }
 } // namespace acp::games

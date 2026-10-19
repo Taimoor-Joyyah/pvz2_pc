@@ -1,4 +1,6 @@
 #include <acp/android.hpp>
+
+#include <set>
 namespace acp::android {
 namespace {
 using U = unsigned;
@@ -48,6 +50,9 @@ struct Graphics::Impl {
     fs::path directory;
     int width = 1280, height = 720, unpack_alignment = 4;
     U array_buffer{};
+    U guest_framebuffer{}, guest_texture{}, guest_depth{};
+    int guest_width{}, guest_height{};
+    std::set<std::array<int, 4>> viewports;
     std::map<U, Address> strings;
     std::string vendor, renderer, version;
     bool etc1_via_etc2{};
@@ -140,6 +145,9 @@ Graphics::Graphics(Runtime &r) : impl_(std::make_unique<Impl>(r)) {
         }
         auto out = m.writable(c.x(1), n * 4);
         p->call<void>("glGetIntegerv", name, reinterpret_cast<I *>(out.data()));
+        if (p->guest_framebuffer && (name == 0x8ca6 || name == 0x8caa) &&
+            m.load<U>(c.x(1)) == p->guest_framebuffer)
+            m.store(c.x(1), U{0});
     });
     bind("glGetError", [p](auto &c) { c.x(0, p->call<U>("glGetError")); });
     for (const auto *name :
@@ -153,7 +161,10 @@ Graphics::Graphics(Runtime &r) : impl_(std::make_unique<Impl>(r)) {
         bind(name, [p, name](auto &c) {
             if (std::string_view(name) == "glBindBuffer" && c.x(0) == 0x8892)
                 p->array_buffer = static_cast<U>(c.x(1));
-            p->call<void>(name, static_cast<U>(c.x(0)), static_cast<U>(c.x(1)));
+            auto object = static_cast<U>(c.x(1));
+            if (std::string_view(name) == "glBindFramebuffer" && object == 0)
+                object = p->guest_framebuffer;
+            p->call<void>(name, static_cast<U>(c.x(0)), object);
         });
     for (const auto *name :
          {"glGenTextures", "glGenFramebuffers", "glGenRenderbuffers", "glGenBuffers", "glDeleteTextures",
@@ -308,6 +319,17 @@ Graphics::Graphics(Runtime &r) : impl_(std::make_unique<Impl>(r)) {
     });
     for (const auto *name : {"glViewport", "glScissor"})
         bind(name, [p, name](auto &c) {
+            if (std::string_view(name) == "glViewport") {
+                std::array<int, 4> value{static_cast<I>(c.x(0)), static_cast<I>(c.x(1)),
+                                         static_cast<I>(c.x(2)), static_cast<I>(c.x(3))};
+                if (p->viewports.size() < 64 && p->viewports.insert(value).second) {
+                    I framebuffer{};
+                    p->call<void>("glGetIntegerv", U{0x8ca6}, &framebuffer);
+                    p->runtime.message(std::format("[GLES] Guest viewport: {},{} {}x{}, framebuffer {}",
+                                                   value[0], value[1], value[2], value[3],
+                                                   framebuffer == p->guest_framebuffer ? 0 : framebuffer));
+                }
+            }
             p->call<void>(name, static_cast<I>(c.x(0)), static_cast<I>(c.x(1)), static_cast<I>(c.x(2)),
                           static_cast<I>(c.x(3)));
         });
@@ -389,16 +411,87 @@ void Graphics::present() {
     require(p.ecall<U>("eglSwapBuffers", p.display, p.surface) != 0, "EGL presentation failed");
 }
 void Graphics::resize(int w, int h) {
+    require(w > 0 && h > 0, "Invalid desktop drawable dimensions");
     impl_->width = w;
     impl_->height = h;
 }
-void Graphics::finish_frame() {}
+void Graphics::set_guest_size(int width, int height) {
+    auto &p = *impl_;
+    require(!p.guest_framebuffer && width > 0 && height > 0 && std::uint64_t(width) * height <= 16'777'216,
+            "Invalid or already configured Android surface");
+    require(p.version.starts_with("OpenGL ES 3."), "Desktop scaling requires ANGLE OpenGL ES 3");
+    I texture{}, renderbuffer{}, framebuffer{};
+    p.call<void>("glGetIntegerv", U{0x8069}, &texture);
+    p.call<void>("glGetIntegerv", U{0x8ca7}, &renderbuffer);
+    p.call<void>("glGetIntegerv", U{0x8ca6}, &framebuffer);
+    p.call<void>("glGenTextures", 1, &p.guest_texture);
+    p.call<void>("glBindTexture", U{0x0de1}, p.guest_texture);
+    p.call<void>("glTexParameteri", U{0x0de1}, U{0x2801}, I{0x2601});
+    p.call<void>("glTexParameteri", U{0x0de1}, U{0x2800}, I{0x2601});
+    p.call<void>("glTexParameteri", U{0x0de1}, U{0x2802}, I{0x812f});
+    p.call<void>("glTexParameteri", U{0x0de1}, U{0x2803}, I{0x812f});
+    p.call<void>("glTexImage2D", U{0x0de1}, 0, I{0x8058}, width, height, 0, U{0x1908}, U{0x1401},
+                 static_cast<const void *>(nullptr));
+    p.call<void>("glGenRenderbuffers", 1, &p.guest_depth);
+    p.call<void>("glBindRenderbuffer", U{0x8d41}, p.guest_depth);
+    p.call<void>("glRenderbufferStorage", U{0x8d41}, U{0x88f0}, width, height);
+    p.call<void>("glGenFramebuffers", 1, &p.guest_framebuffer);
+    p.call<void>("glBindFramebuffer", U{0x8d40}, p.guest_framebuffer);
+    p.call<void>("glFramebufferTexture2D", U{0x8d40}, U{0x8ce0}, U{0x0de1}, p.guest_texture, 0);
+    p.call<void>("glFramebufferRenderbuffer", U{0x8d40}, U{0x821a}, U{0x8d41}, p.guest_depth);
+    require(p.call<U>("glCheckFramebufferStatus", U{0x8d40}) == 0x8cd5,
+            "Cannot allocate the stable Android surface");
+    p.guest_width = width;
+    p.guest_height = height;
+    p.call<void>("glBindTexture", U{0x0de1}, static_cast<U>(texture));
+    p.call<void>("glBindRenderbuffer", U{0x8d41}, static_cast<U>(renderbuffer));
+    p.call<void>("glBindFramebuffer", U{0x8d40},
+                 framebuffer ? static_cast<U>(framebuffer) : p.guest_framebuffer);
+    p.call<void>("glViewport", 0, 0, width, height);
+}
+void Graphics::finish_frame() {
+    auto &p = *impl_;
+    if (!p.guest_framebuffer)
+        return;
+    // Presentation must not leak framebuffer, clear or scissor state into the guest.
+    I draw{}, read{};
+    std::array<B, 4> mask{};
+    std::array<F, 4> color{};
+    auto scissor = p.call<B>("glIsEnabled", U{0x0c11});
+    p.call<void>("glGetIntegerv", U{0x8ca6}, &draw);
+    p.call<void>("glGetIntegerv", U{0x8caa}, &read);
+    p.call<void>("glGetBooleanv", U{0x0c23}, mask.data());
+    p.call<void>("glGetFloatv", U{0x0c22}, color.data());
+    p.call<void>("glBindFramebuffer", U{0x8ca9}, U{0});
+    p.call<void>("glDisable", U{0x0c11});
+    p.call<void>("glColorMask", B{1}, B{1}, B{1}, B{1});
+    p.call<void>("glClearColor", F{0}, F{0}, F{0}, F{1});
+    p.call<void>("glClear", U{0x4000});
+    p.call<void>("glBindFramebuffer", U{0x8ca8}, p.guest_framebuffer);
+    auto viewport = host::fit_viewport(p.width, p.height, p.guest_width, p.guest_height);
+    auto bottom = p.height - viewport.y - viewport.height;
+    p.call<void>("glBlitFramebuffer", 0, 0, p.guest_width, p.guest_height, viewport.x, bottom,
+                 viewport.x + viewport.width, bottom + viewport.height, U{0x4000}, U{0x2601});
+    p.call<void>("glBindFramebuffer", U{0x8ca9}, static_cast<U>(draw));
+    p.call<void>("glBindFramebuffer", U{0x8ca8}, static_cast<U>(read));
+    p.call<void>("glClearColor", color[0], color[1], color[2], color[3]);
+    p.call<void>("glColorMask", mask[0], mask[1], mask[2], mask[3]);
+    if (scissor)
+        p.call<void>("glEnable", U{0x0c11});
+}
 Bytes Graphics::read_rgba(int width, int height) {
     require(width > 0 && height > 0 && std::uint64_t(width) * height <= 16'777'216,
             "GLES capture dimensions are invalid");
     Bytes pixels(static_cast<size_t>(width) * height * 4);
+    I read{};
+    if (impl_->guest_framebuffer) {
+        impl_->call<void>("glGetIntegerv", U{0x8caa}, &read);
+        impl_->call<void>("glBindFramebuffer", U{0x8ca8}, U{0});
+    }
     impl_->call<void>("glReadPixels", 0, 0, width, height, U{0x1908}, U{0x1401},
                       static_cast<void *>(pixels.data()));
+    if (impl_->guest_framebuffer)
+        impl_->call<void>("glBindFramebuffer", U{0x8ca8}, static_cast<U>(read));
     require(impl_->call<U>("glGetError") == 0, "GLES capture failed");
     return pixels;
 }
@@ -412,6 +505,9 @@ Json Graphics::describe() const {
             {"version", p.version},
             {"width", p.width},
             {"height", p.height},
+            {"guest_width", p.guest_width},
+            {"guest_height", p.guest_height},
+            {"guest_viewports", p.viewports},
             {"directory", utf8(p.directory)}};
 }
 } // namespace acp::android

@@ -69,6 +69,9 @@ float Viewport::guest_x(float value) const {
 float Viewport::guest_y(float value) const {
     return height ? (value - y) / height : 0;
 }
+bool Viewport::contains(float px, float py) const {
+    return px >= x && py >= y && px < x + width && py < y + height;
+}
 Viewport fit_viewport(int dw, int dh, int gw, int gh) {
     require(dw > 0 && dh > 0 && gw > 0 && gh > 0, "Invalid viewport dimensions");
     auto scale = std::min(double(dw) / gw, double(dh) / gh);
@@ -131,6 +134,9 @@ class Windows final : public Services {
     }
     void open_window(std::string_view title, int width, int height) override {
         require(!window_, "Window already exists");
+        // Guest initialization can spend seconds in a single native call. Keep Windows
+        // from substituting a ghost window while the runtime owns the actual surface.
+        DisableProcessWindowsGhosting();
         require(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS),
                 std::string("SDL initialization: ") + SDL_GetError());
         initialized_ = true;
@@ -143,6 +149,11 @@ class Windows final : public Services {
         return SDL_GetPointerProperty(SDL_GetWindowProperties(window_), SDL_PROP_WINDOW_WIN32_HWND_POINTER,
                                       nullptr);
     }
+    std::pair<int, int> drawable_size() const override {
+        int width{}, height{};
+        require(window_ && SDL_GetWindowSizeInPixels(window_, &width, &height), SDL_GetError());
+        return {width, height};
+    }
     std::vector<Event> poll() override {
         std::vector<WebViewRequest> requests;
         {
@@ -154,6 +165,8 @@ class Windows final : public Services {
         std::erase_if(web_views_, [](const auto &view) { return view->closed(); });
         std::vector<Event> out;
         SDL_Event e{};
+        // Pump native resize/DPI changes before deriving the mouse-to-pixel scale.
+        SDL_PumpEvents();
         int logical_w = 1, logical_h = 1, pixel_w = 1, pixel_h = 1;
         if (window_) {
             SDL_GetWindowSize(window_, &logical_w, &logical_h);
@@ -218,6 +231,7 @@ class Windows final : public Services {
     void fullscreen() override {
         fullscreen_ = !fullscreen_;
         require(SDL_SetWindowFullscreen(window_, fullscreen_), SDL_GetError());
+        require(SDL_SyncWindow(window_), SDL_GetError());
     }
     void start_text(bool enabled) override {
         if (window_) {

@@ -121,6 +121,28 @@ int main() {
         };
         auto type = jni.class_ref("com/popcap/SexyAppFramework/SexyAppFrameworkActivity");
         auto instance = jni.object("com/popcap/SexyAppFramework/SexyAppFrameworkActivity");
+        auto ui_method = invoke(
+            33, {type, memory.string("UI_ProcessEvents"), memory.string("(Ljava/nio/ByteBuffer;)Z")});
+        auto ui_bytes = memory.allocate(512);
+        auto ui_buffer = jni.object("java/nio/ByteBuffer");
+        jni.get(ui_buffer).fields = {{"address", ui_bytes}, {"capacity", 512}};
+        auto drain_ui = [&] { invoke(37, {instance, ui_method, ui_buffer}); };
+        adapter->event(runtime, {host::EventType::Resize, 0, 0, 720, 1280});
+        adapter->event(runtime, {host::EventType::PointerDown, 360, 100});
+        adapter->event(runtime, {host::EventType::PointerUp, 360, 100});
+        drain_ui();
+        require(memory.load<unsigned>(ui_bytes) == 0, "Letterbox clicks must not reach the game");
+        adapter->event(runtime, {host::EventType::PointerDown, 360, 639.5f});
+        adapter->event(runtime, {host::EventType::PointerMove, 900, 1400});
+        adapter->event(runtime, {host::EventType::Resize, 0, 0, 1280, 720});
+        adapter->event(runtime, {host::EventType::PointerUp, 900, 700});
+        drain_ui();
+        auto mapped_ui = memory.readable(ui_bytes, 512);
+        BinaryView mapped_events(mapped_ui);
+        require(mapped_events.get<unsigned>(0) == 3 && mapped_events.get<int>(24) == 640 &&
+                    mapped_events.get<int>(28) == 360 && mapped_events.get<int>(72) == 1279 &&
+                    mapped_events.get<int>(76) == 719 && mapped_events.get<unsigned>(148) == 4,
+                "Resized input maps to guest pixels, clamps drags, and cancels a touch on resize");
         runtime.options.application_metadata = {{"present", true}};
         auto config = jni.class_ref("com/ea/nimble/NimbleApplicationConfiguration");
         auto config_default = invoke(

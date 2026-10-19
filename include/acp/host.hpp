@@ -42,6 +42,7 @@ struct Viewport {
     int x{}, y{}, width{}, height{};
     float guest_x(float x) const;
     float guest_y(float y) const;
+    bool contains(float px, float py) const;
 };
 Viewport fit_viewport(int drawable_width, int drawable_height, int guest_width, int guest_height);
 struct WebViewRequest {
@@ -71,6 +72,9 @@ class Services {
     virtual ~Services() = default;
     virtual void open_window(std::string_view title, int width, int height) = 0;
     virtual void *native_window() const = 0;
+    virtual std::pair<int, int> drawable_size() const {
+        return {1280, 720};
+    }
     virtual std::vector<Event> poll() = 0;
     virtual void fullscreen() = 0;
     virtual void start_text(bool enabled) = 0;

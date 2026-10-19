@@ -95,12 +95,77 @@ int main() {
             require(std::to_integer<unsigned>(etc1_pixels[center + channel]) >= 1 &&
                         std::to_integer<unsigned>(etc1_pixels[center + channel]) <= 3,
                     "ETC1 decoded pixel mismatch");
+        // Exercise the same fixed-surface presentation path as the real game.
+        r.graphics->set_guest_size(128, 72);
+        r.graphics->resize(128, 128);
+        r.cpu.f32(0, 1);
+        r.cpu.f32(1, 0);
+        r.cpu.f32(2, 0);
+        r.cpu.f32(3, 1);
+        call("glClearColor");
+        call("glClear", {0x4000});
+        call("glViewport", {5, 7, 110, 60});
+        call("glScissor", {8, 9, 10, 11});
+        call("glEnable", {0x0c11});
+        call("glColorMask", {0, 1, 0, 1});
+        r.graphics->finish_frame();
+        auto scaled = r.graphics->read_rgba(128, 128);
+        require(scaled[center] == std::byte{255} && scaled[center + 1] == std::byte{0} &&
+                    scaled[center + 2] == std::byte{0} && scaled[0] == std::byte{0} &&
+                    scaled[1] == std::byte{0} && scaled[2] == std::byte{0},
+                "Fixed Android surface must fill the fitted viewport with black letterbox bars");
+        auto state = r.memory.allocate(16);
+        call("glGetIntegerv", {0x8ca6, state});
+        require(r.memory.load<unsigned>(state) == 0,
+                "Host surface is invisible to guest framebuffer queries");
+        call("glGetIntegerv", {0x0ba2, state});
+        require(r.memory.load<int>(state) == 5 && r.memory.load<int>(state + 4) == 7 &&
+                    r.memory.load<int>(state + 8) == 110 && r.memory.load<int>(state + 12) == 60,
+                "Presentation preserves guest viewport state");
+        call("glGetIntegerv", {0x0c10, state});
+        require(r.memory.load<int>(state) == 8 && r.memory.load<int>(state + 12) == 11,
+                "Presentation preserves guest scissor state");
+        call("glBindFramebuffer", {0x8d40, 0});
+        require(call("glCheckFramebufferStatus", {0x8d40}) == 0x8cd5 && call("glGetError") == 0,
+                "Binding guest framebuffer zero restores the complete Android surface");
+        // The game also draws to its own FBOs. Presentation must keep those bindings
+        // intact and must always present the Android default surface, not that FBO.
+        auto offscreen_id = r.memory.allocate(4);
+        call("glGenTextures", {1, texture_id});
+        call("glBindTexture", {0x0de1, r.memory.load<unsigned>(texture_id)});
+        call("glTexImage2D", {0x0de1, 0, 0x1908, 4, 4, 0, 0x1908, 0x1401, 0});
+        call("glGenFramebuffers", {1, offscreen_id});
+        auto offscreen = r.memory.load<unsigned>(offscreen_id);
+        call("glBindFramebuffer", {0x8d40, offscreen});
+        call("glFramebufferTexture2D", {0x8d40, 0x8ce0, 0x0de1, r.memory.load<unsigned>(texture_id), 0});
+        require(call("glCheckFramebufferStatus", {0x8d40}) == 0x8cd5, "Guest offscreen FBO is complete");
+        call("glDisable", {0x0c11});
+        call("glColorMask", {1, 1, 1, 1});
+        r.cpu.f32(0, 0);
+        r.cpu.f32(1, 1);
+        r.cpu.f32(2, 0);
+        r.cpu.f32(3, 1);
+        call("glClearColor");
+        call("glClear", {0x4000});
+        r.graphics->finish_frame();
+        auto offscreen_present = r.graphics->read_rgba(128, 128);
+        require(offscreen_present[center] == std::byte{255} &&
+                    offscreen_present[center + 1] == std::byte{0},
+                "An active guest offscreen FBO must not replace the presented Android surface");
+        for (auto binding : {0x8ca6, 0x8caa}) {
+            call("glGetIntegerv", {static_cast<unsigned>(binding), state});
+            require(r.memory.load<unsigned>(state) == offscreen,
+                    "Presentation and readback preserve guest draw/read framebuffer bindings");
+        }
+        call("glBindFramebuffer", {0x8d40, 0});
+        require(call("glGetError") == 0, "Offscreen presentation has no GL errors");
+        write_png_rgba(root / "letterbox.png", 128, 128, scaled, true);
         Json report{
             {"result", "passed"},
             {"version", version},
             {"etc1_advertised", extensions.find("GL_OES_compressed_ETC1_RGB8_texture") != extensions.npos},
             {"validated", "GLES shader compilation, linking, guest client arrays, draw, pixel readback, "
-                          "and ETC1 decoding"}};
+                          "ETC1 decoding, fixed-surface scaling, letterboxing and GL state preservation"}};
         write_json(root / "report.json", report);
         r.graphics->present();
         std::cout << report.dump(2) << '\n';
