@@ -23,7 +23,7 @@ struct Arguments {
             auto key = narrow(argv[i]);
             if (key == "--probe" || key == "--verify" || key == "--live-input" || key == "--fullscreen" ||
                 key == "--windowed" || key == "--maximized" || key == "--vsync" || key == "--no-vsync" ||
-                key == "--mute") {
+                key == "--mute" || key == "--performance-profile") {
                 flags.insert(key);
                 continue;
             }
@@ -83,6 +83,7 @@ int acp::launcher::run_game(int argc, wchar_t **argv, bool graphical) {
     games::Pvz2Options game_options;
     launcher::Settings launch_settings;
     fs::path launcher_config, log_path;
+    const auto launch_start = std::chrono::steady_clock::now();
     try {
         Arguments args(argc, argv);
         launcher_config = args.path("--launcher-config", launcher::default_config_path());
@@ -242,6 +243,7 @@ int acp::launcher::run_game(int argc, wchar_t **argv, bool graphical) {
                                         installation.directory / "apks"};
         options.application_metadata = manifest.value("metadata", Json::object());
         options.target_sdk = manifest.value("target_sdk", 1u);
+        options.performance_profile = args.flags.contains("--performance-profile");
         runtime = std::make_unique<android::Runtime>(std::move(options));
         auto &r = *runtime;
         report_path =
@@ -274,9 +276,10 @@ int acp::launcher::run_game(int argc, wchar_t **argv, bool graphical) {
         r.host->audio_gain(launch_settings.muted ? 0.f : launch_settings.volume / 100.f);
         r.initialize_libraries();
         adapter->start(r);
+        r.timings.record(FrameStage::Startup, std::chrono::steady_clock::now() - launch_start);
         bool captured = false;
         auto [drawable_width, drawable_height] = r.host->drawable_size();
-        std::vector<double> frame_times;
+        TimingSummary frame_times;
         bool quit = false, replay_quit = false;
         while (!quit && !adapter->quit_requested()) {
             r.check_threads();
@@ -304,11 +307,12 @@ int acp::launcher::run_game(int argc, wchar_t **argv, bool graphical) {
                 }
             if (quit)
                 break;
+            r.timings.record(FrameStage::Events, std::chrono::steady_clock::now() - frame_start);
             adapter->frame(r);
-            r.graphics->finish_frame();
+            r.timings.measure(FrameStage::Presentation, [&] { r.graphics->finish_frame(); });
             r.check_threads();
             if (limit && frames + 1 == limit)
-                r.wait_callbacks();
+                r.timings.measure(FrameStage::CallbackDrain, [&] { r.wait_callbacks(); });
             if (capture && (frames + 1 == limit || (capture_every && (frames + 1) % capture_every == 0))) {
                 auto path = path_from_utf8(*capture);
                 const bool final_frame = frames + 1 == limit;
@@ -316,19 +320,19 @@ int acp::launcher::run_game(int argc, wchar_t **argv, bool graphical) {
                     path = path.parent_path() /
                            path_from_utf8(utf8(path.stem()) + std::format("-{:06}", frames + 1) +
                                           utf8(path.extension()));
-                write_png_rgba(path, drawable_width, drawable_height,
-                               r.graphics->read_rgba(drawable_width, drawable_height), true);
+                r.timings.measure(FrameStage::Capture, [&] {
+                    write_png_rgba(path, drawable_width, drawable_height,
+                                   r.graphics->read_rgba(drawable_width, drawable_height), true);
+                });
                 frame_captures.push_back({{"frame", frames + 1},
                                           {"path", utf8(path)},
                                           {"width", drawable_width},
                                           {"height", drawable_height}});
                 captured |= final_frame;
             }
-            r.graphics->present();
+            r.timings.measure(FrameStage::Swap, [&] { r.graphics->present(); });
             ++frames;
-            frame_times.push_back(
-                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frame_start)
-                    .count());
+            frame_times.add(std::chrono::steady_clock::now() - frame_start);
             if (limit && frames >= limit)
                 break;
         }
@@ -351,20 +355,8 @@ int acp::launcher::run_game(int argc, wchar_t **argv, bool graphical) {
         if (replay)
             report["input_replay"] = replay->report();
         report["frame_captures"] = frame_captures;
-        if (!frame_times.empty()) {
-            std::ranges::sort(frame_times);
-            double total = 0;
-            for (auto time : frame_times)
-                total += time;
-            auto percentile = [&](double fraction) {
-                return frame_times[static_cast<size_t>((frame_times.size() - 1) * fraction)];
-            };
-            report["frame_time_ms"] = {{"mean", total / frames},
-                                       {"p50", percentile(0.5)},
-                                       {"p95", percentile(0.95)},
-                                       {"p99", percentile(0.99)},
-                                       {"max", frame_times.back()}};
-        }
+        if (frames)
+            report["frame_time_ms"] = frame_times.report();
         if (captured)
             report["capture"] = *capture;
         write_json(report_path, report);

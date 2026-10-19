@@ -5,26 +5,36 @@ namespace acp::guest {
 void Linker::provide(std::string name, Handler handler) {
     auto address = traps_.add(name, std::move(handler));
     require(provided_.emplace(std::move(name), address).second, "Duplicate host import");
+    ++revision_;
 }
 void Linker::provide_data(std::string name, Address a) {
     require(provided_.emplace(std::move(name), a).second, "Duplicate host data import");
+    ++revision_;
 }
 void Linker::system_library(std::string name) {
     system_libraries_.push_back(std::move(name));
 }
 LoadedImage &Linker::load(const fs::path &path) {
-    auto name = utf8(path.filename());
     for (auto &image : images_)
         if (image->path.filename() == path.filename())
             return *image;
-    auto item = std::make_unique<LoadedImage>(LoadedImage{path, ElfImage(read_bytes(path)), 0, false});
+    auto item = std::make_unique<LoadedImage>(LoadedImage{path, ElfImage(read_bytes(path)), 0, false, {}});
     auto &image = *item;
     image.base = memory_.allocate(static_cast<size_t>(image.elf.image_size()), Read | Write, 4096);
     for (const auto &s : image.elf.segments())
         if (s.type == 1)
             memory_.write(image.base + s.address,
                           BinaryView(image.elf.bytes()).slice(s.offset, s.file_size));
+    for (const auto &symbol : image.elf.symbols())
+        if (symbol.defined() && symbol.binding) {
+            auto address = symbol.section == 0xfff1 ? symbol.value : image.base + symbol.value;
+            image.exports.try_emplace(symbol.name, address);
+        }
+    for (const auto &[name, address] : image.exports)
+        if (address)
+            symbols_.try_emplace(name, address);
     images_.push_back(std::move(item));
+    ++revision_;
     for (const auto &dependency : image.elf.needed()) {
         if (std::ranges::find(system_libraries_, dependency) != system_libraries_.end())
             continue;
@@ -38,17 +48,14 @@ LoadedImage &Linker::load(const fs::path &path) {
     return image;
 }
 Address Linker::image_symbol(const LoadedImage &image, std::string_view name) const {
-    for (const auto &s : image.elf.symbols())
-        if (s.defined() && s.binding && s.name == name)
-            return s.section == 0xfff1 ? s.value : image.base + s.value;
-    return 0;
+    auto it = image.exports.find(name);
+    return it == image.exports.end() ? 0 : it->second;
 }
 Address Linker::symbol(std::string_view name) const {
     // Guest definitions (especially libc++/libc++abi) retain the Android ABI.
-    for (const auto &image : images_)
-        if (auto address = image_symbol(*image, name))
-            return address;
-    auto it = provided_.find(std::string(name));
+    if (auto it = symbols_.find(name); it != symbols_.end())
+        return it->second;
+    auto it = provided_.find(name);
     return it == provided_.end() ? 0 : it->second;
 }
 std::vector<std::string> Linker::unresolved() const {

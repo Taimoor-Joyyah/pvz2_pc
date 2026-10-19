@@ -19,6 +19,68 @@
 
 namespace acp::android {
 namespace {
+int compare_strings(const guest::Memory &memory, Address left, Address right, size_t maximum,
+                    bool insensitive, bool bounded) {
+    size_t offset = 0;
+    while (offset < maximum) {
+        auto a = left + offset, b = right + offset;
+        auto count =
+            std::min({maximum - offset, guest::Memory::page_size - size_t(a % guest::Memory::page_size),
+                      guest::Memory::page_size - size_t(b % guest::Memory::page_size)});
+        auto x = reinterpret_cast<const char *>(memory.readable(a, count).data());
+        auto y = reinterpret_cast<const char *>(memory.readable(b, count).data());
+        if (!insensitive) {
+            auto end = static_cast<const char *>(std::memchr(x, 0, count));
+            auto result = std::strncmp(x, y, end ? static_cast<size_t>(end - x) + 1 : count);
+            if (result || end)
+                return result;
+        } else {
+            for (size_t i = 0; i < count; ++i) {
+                auto first = std::tolower(static_cast<unsigned char>(x[i]));
+                auto second = std::tolower(static_cast<unsigned char>(y[i]));
+                if (first != second || !first)
+                    return first - second;
+            }
+        }
+        offset += count;
+    }
+    require(bounded, "Unterminated guest string");
+    return 0;
+}
+
+int compare_wide(const guest::Memory &memory, Address left, Address right, size_t maximum,
+                 bool terminated) {
+    size_t offset = 0;
+    while (offset < maximum) {
+        auto a = left + offset * 4, b = right + offset * 4;
+        auto count = std::min({maximum - offset,
+                               (guest::Memory::page_size - size_t(a % guest::Memory::page_size)) / 4,
+                               (guest::Memory::page_size - size_t(b % guest::Memory::page_size)) / 4});
+        // A deliberately unaligned 32-bit unit can span two pages.
+        if (!count) {
+            auto x = memory.load<std::uint32_t>(a), y = memory.load<std::uint32_t>(b);
+            if (x != y)
+                return x < y ? -1 : 1;
+            if (terminated && !x)
+                return 0;
+            ++offset;
+            continue;
+        }
+        auto x = memory.readable(a, count * 4), y = memory.readable(b, count * 4);
+        for (size_t i = 0; i < count; ++i) {
+            std::uint32_t first{}, second{};
+            std::memcpy(&first, x.data() + i * 4, 4);
+            std::memcpy(&second, y.data() + i * 4, 4);
+            if (first != second)
+                return first < second ? -1 : 1;
+            if (terminated && !first)
+                return 0;
+        }
+        offset += count;
+    }
+    return 0;
+}
+
 struct Args {
     guest::Cpu &cpu;
     size_t integer{}, floating{};
@@ -320,7 +382,9 @@ std::string format_guest(guest::Cpu &cpu, Address pointer, size_t first, Address
 void install_bionic(Runtime &r) {
     auto bind = [&](std::string name, auto handler) { r.bind(std::move(name), std::move(handler)); };
     auto &m = r.memory;
-    bind("malloc", [&](auto &c) { return m.allocate(c.x(0)); });
+    bind("malloc", [&](auto &c) {
+        return m.allocate(c.x(0), guest::Read | guest::Write, 16, guest::Initialize::Uninitialized);
+    });
     bind("calloc", [&](auto &c) {
         require(!c.x(1) || c.x(0) <= SIZE_MAX / c.x(1), "calloc overflow");
         return m.allocate(c.x(0) * c.x(1));
@@ -329,32 +393,22 @@ void install_bionic(Runtime &r) {
         m.release(c.x(0));
         return 0;
     });
-    bind("realloc", [&](auto &c) {
-        auto old = c.x(0), size = c.x(1);
-        if (!size) {
-            m.release(old);
-            return Address{};
-        }
-        auto out = m.allocate(size);
-        if (old) {
-            auto n = std::min<size_t>(size, m.allocation_size(old));
-            m.write(out, m.readable(old, n));
-            m.release(old);
-        }
-        return out;
+    bind("realloc", [&](auto &c) { return m.reallocate(c.x(0), c.x(1)); });
+    bind("memalign", [&](auto &c) {
+        return m.allocate(c.x(1), guest::Read | guest::Write, c.x(0), guest::Initialize::Uninitialized);
     });
-    bind("memalign", [&](auto &c) { return m.allocate(c.x(1), guest::Read | guest::Write, c.x(0)); });
     bind("posix_memalign", [&](auto &c) {
         if (c.x(1) < 8 || !std::has_single_bit(c.x(1)))
             return 22;
-        m.store(c.x(0), m.allocate(c.x(2), guest::Read | guest::Write, c.x(1)));
+        m.store(c.x(0),
+                m.allocate(c.x(2), guest::Read | guest::Write, c.x(1), guest::Initialize::Uninitialized));
         return 0;
     });
     bind("malloc_usable_size", [&](auto &c) { return m.allocation_size(c.x(0)); });
     for (const auto *name : {"memcpy", "memmove", "__memcpy_chk", "__memmove_chk"})
-        bind(name, [&](auto &c) {
+        bind(name, [&, fortified = std::string_view(name).starts_with("__")](auto &c) {
             auto size = c.x(2);
-            if (c.current_import.starts_with("__"))
+            if (fortified)
                 require(size <= c.x(3), "Fortified memory copy overflow");
             auto src = m.readable(c.x(1), size);
             auto dst = m.writable(c.x(0), size);
@@ -362,9 +416,9 @@ void install_bionic(Runtime &r) {
             return c.x(0);
         });
     for (const auto *name : {"memset", "__memset_chk"})
-        bind(name, [&](auto &c) {
+        bind(name, [&, fortified = std::string_view(name).starts_with("__")](auto &c) {
             auto size = c.x(2);
-            if (c.current_import.starts_with("__"))
+            if (fortified)
                 require(size <= c.x(3), "Fortified memset overflow");
             auto dst = m.writable(c.x(0), size);
             std::memset(dst.data(), static_cast<int>(c.x(1)), size);
@@ -388,37 +442,32 @@ void install_bionic(Runtime &r) {
             return 0;
         });
     for (const auto *name : {"strlen", "__strlen_chk", "strnlen"})
-        bind(name, [&](auto &c) {
-            auto max = c.current_import == "strlen" ? size_t(1 << 20) : static_cast<size_t>(c.x(1));
-            size_t n = 0;
-            while (n < max && m.load<char>(c.x(0) + n))
-                ++n;
-            if (c.current_import == "__strlen_chk")
+        bind(name, [&, unbounded = std::string_view(name) == "strlen",
+                    fortified = std::string_view(name) == "__strlen_chk"](auto &c) {
+            auto max = unbounded ? size_t(1 << 20) : static_cast<size_t>(c.x(1));
+            auto n = m.string_length(c.x(0), max);
+            if (fortified)
                 require(n < max, "Fortified strlen overflow");
             return n;
         });
-    bind("strdup", [&](auto &c) { return m.string(m.string(c.x(0))); });
-    bind("strndup", [&](auto &c) {
-        auto text = m.string(c.x(0));
-        text.resize(std::min<size_t>(text.size(), c.x(1)));
-        return m.string(text);
-    });
-    for (const auto *name : {"strcmp", "strncmp", "strcasecmp", "strncasecmp"})
-        bind(name, [&](auto &c) {
-            auto a = m.string(c.x(0)), b = m.string(c.x(1));
-            auto name = c.current_import;
-            if (name == "strncmp" || name == "strncasecmp") {
-                a.resize(std::min<size_t>(a.size(), c.x(2)));
-                b.resize(std::min<size_t>(b.size(), c.x(2)));
-            }
-            if (name == "strcasecmp" || name == "strncasecmp") {
-                std::ranges::transform(a, a.begin(),
-                                       [](unsigned char x) { return static_cast<char>(std::tolower(x)); });
-                std::ranges::transform(b, b.begin(),
-                                       [](unsigned char x) { return static_cast<char>(std::tolower(x)); });
-            }
-            return a.compare(b);
+    for (const auto *name : {"strdup", "strndup"})
+        bind(name, [&, bounded = std::string_view(name) == "strndup"](auto &c) {
+            auto maximum = bounded ? static_cast<size_t>(c.x(1)) : size_t(1 << 20);
+            auto size = m.string_length(c.x(0), maximum);
+            require(bounded || size < maximum, "Unterminated guest string");
+            auto out =
+                m.allocate(size + 1, guest::Read | guest::Write, 16, guest::Initialize::Uninitialized);
+            m.write(out, m.readable(c.x(0), size));
+            m.store(out + size, char{});
+            return out;
         });
+    for (const auto *name : {"strcmp", "strncmp", "strcasecmp", "strncasecmp"})
+        bind(name,
+             [&, bounded = std::string_view(name) == "strncmp" || std::string_view(name) == "strncasecmp",
+              insensitive = std::string_view(name).find("casecmp") != std::string_view::npos](auto &c) {
+                 return compare_strings(m, c.x(0), c.x(1), bounded ? size_t(c.x(2)) : size_t(1 << 20),
+                                        insensitive, bounded);
+             });
     for (const auto *name :
          {"strcpy", "__strcpy_chk", "strncpy", "__strncpy_chk", "__strncpy_chk2", "strcat", "__strcat_chk",
           "strncat", "__strncat_chk", "strlcpy", "__strlcpy_chk"})
@@ -559,15 +608,8 @@ void install_bionic(Runtime &r) {
                 return size;
             }
             if (name == "wcscmp" || name == "wmemcmp") {
-                for (size_t i = 0; i < (name == "wcscmp" ? 1 << 20 : size); ++i) {
-                    auto a = m.load<std::uint32_t>(c.x(0) + i * 4),
-                         b = m.load<std::uint32_t>(c.x(1) + i * 4);
-                    if (a != b)
-                        return std::bit_cast<std::uint64_t>(std::int64_t(a < b ? -1 : 1));
-                    if (!a && name == "wcscmp")
-                        return 0;
-                }
-                return 0;
+                return static_cast<std::uint64_t>(static_cast<std::int64_t>(compare_wide(
+                    m, c.x(0), c.x(1), name == "wcscmp" ? size_t(1 << 20) : size, name == "wcscmp")));
             }
             if (name == "wmemchr") {
                 for (size_t i = 0; i < size; ++i)
@@ -1829,22 +1871,29 @@ void install_bionic(Runtime &r) {
     });
     for (const auto *name : {"setjmp", "_setjmp", "sigsetjmp", "__sigsetjmp"})
         bind(name, [&](auto &c) {
-            auto p = c.x(0);
+            auto saved = m.writable(c.x(0), 176);
+            std::array<std::uint64_t, 13> registers{};
             for (size_t i = 19; i <= 30; ++i)
-                m.store(p + (i - 19) * 8, c.x(i));
-            m.store(p + 96, c.sp());
-            for (size_t i = 8; i < 16; ++i)
-                m.store(p + 112 + (i - 8) * 8, std::bit_cast<std::uint64_t>(c.f64(i)));
+                registers[i - 19] = c.x(i);
+            registers[12] = c.sp();
+            std::memcpy(saved.data(), registers.data(), sizeof(registers));
+            for (size_t i = 8; i < 16; ++i) {
+                auto value = std::bit_cast<std::uint64_t>(c.f64(i));
+                std::memcpy(saved.data() + 112 + (i - 8) * 8, &value, 8);
+            }
             return 0;
         });
     for (const auto *name : {"longjmp", "_longjmp", "siglongjmp"})
         r.bind_void(name, [&](auto &c) {
             auto p = c.x(0), value = c.x(1);
+            auto saved = m.readable(p, 176);
+            std::array<std::uint64_t, 22> registers{};
+            std::memcpy(registers.data(), saved.data(), 176);
             for (size_t i = 19; i <= 30; ++i)
-                c.x(i, m.load<std::uint64_t>(p + (i - 19) * 8));
-            c.sp(m.load<Address>(p + 96));
+                c.x(i, registers[i - 19]);
+            c.sp(registers[12]);
             for (size_t i = 8; i < 16; ++i)
-                c.f64(i, std::bit_cast<double>(m.load<std::uint64_t>(p + 112 + (i - 8) * 8)));
+                c.f64(i, std::bit_cast<double>(registers[14 + i - 8]));
             c.x(0, value ? value : 1);
             c.pc(c.x(30));
         });

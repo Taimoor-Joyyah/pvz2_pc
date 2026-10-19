@@ -5,6 +5,8 @@ namespace acp::android {
 Runtime::Runtime(RuntimeOptions opts, std::unique_ptr<host::Services> services)
     : traps(memory), linker(memory, traps), cpu(memory, traps), options(std::move(opts)),
       host(std::move(services)) {
+    timings.enabled = options.performance_profile;
+    cpu.profiling(options.performance_profile);
     require(!options.package.empty(), "A package identity is required");
     options.data = fs::absolute(options.data).lexically_normal();
     working_directory_ = "/data/data/" + options.package + "/files";
@@ -367,6 +369,9 @@ Json Runtime::report() const {
             {"file_failures", file_failures},
             {"guest_memory", memory.statistics()},
             {"guest_cpu", cpu.statistics()},
+            {"guest_cpu_scope", "main CPU lifetime; active pthread and callback CPUs excluded"},
+            {"performance_profile", options.performance_profile},
+            {"frame_stages_ms", timings.report()},
             {"worker_errors", workers},
             {"pending_callbacks", callbacks_.size()},
             {"scheduled_callbacks", scheduled_callbacks_.size()},

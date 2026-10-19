@@ -293,7 +293,22 @@ void elf_loading() {
     guest::TrapTable traps(memory);
     guest::Cpu cpu(memory, traps);
     guest::Linker linker(memory, traps);
+    linker.provide_data("sample_add", 0x1234);
     auto &image = linker.load(file);
+    check(linker.symbol("sample_add") == image.base + 0x180 &&
+              linker.image_symbol(image, "sample_add") == image.base + 0x180,
+          "Indexed guest definitions retain precedence over host symbols");
+    check(linker.symbol("provided_later") == 0, "Missing symbols are not cached permanently");
+    auto revision = linker.revision();
+    linker.provide_data("provided_later", 0x5678);
+    check(linker.symbol("provided_later") == 0x5678 && linker.revision() > revision,
+          "Adding a host symbol invalidates entry-point caches");
+    auto second_file = fs::current_path() / "test-artifacts/native-test-second.so";
+    write_bytes(second_file, bytes);
+    auto &second_image = linker.load(second_file);
+    check(linker.symbol("sample_add") == image.base + 0x180 &&
+              linker.image_symbol(second_image, "sample_add") == second_image.base + 0x180,
+          "Symbol indexes preserve image load order and image-local lookup");
     check(linker.unresolved() == std::vector<std::string>{"host_ping"},
           "Required unresolved imports are diagnosed");
     rejects([&] { linker.relocate(); }, "Required missing symbols must prevent relocation");
@@ -307,11 +322,151 @@ void elf_loading() {
           "ELF JUMP_SLOT relocation points to a guest trap");
     linker.initialize(cpu);
     linker.initialize(cpu);
-    check(initialized == 1, "ELF constructors run exactly once");
+    check(initialized == 2, "Each loaded ELF constructor runs exactly once");
     check(cpu.call(linker.symbol("sample_add"), std::array<std::uint64_t, 2>{19, 23}) == 42,
           "Loaded ARM64 ELF export execution");
     bytes.resize(64);
     rejects([&] { guest::ElfImage invalid(bytes); }, "Truncated ELF tables must be rejected");
+}
+void performance_contracts() {
+    auto root = fs::current_path() / "test-artifacts/performance-contracts";
+    android::Runtime r({"org.example.performance", "1", "en_US", 1, root / "data", {}, {}});
+    auto &m = r.memory;
+    auto invoke = [&](std::string_view name, std::initializer_list<Address> arguments = {}) {
+        return r.cpu.call(r.linker.symbol(name), std::span(arguments.begin(), arguments.size()));
+    };
+    auto block = m.allocate(4096);
+    std::memset(m.writable(block, 4096).data(), 0x5a, 4096);
+    m.release(block);
+    auto reused = invoke("malloc", {4096});
+    check(reused == block && m.load<unsigned char>(reused) == 0x5a,
+          "malloc reuses heap memory without redundant clearing");
+    check(invoke("realloc", {reused, 64}) == reused && m.load<unsigned char>(reused + 63) == 0x5a &&
+              invoke("malloc_usable_size", {reused}) >= 64,
+          "Shrinking realloc retains the block and its contents");
+    auto grown = invoke("realloc", {reused, 8192});
+    check(grown != reused && m.load<unsigned char>(grown) == 0x5a &&
+              m.load<unsigned char>(grown + 4095) == 0x5a,
+          "Growing realloc preserves the entire previous usable allocation");
+    check(invoke("realloc", {grown, 0}) == 0, "Zero-sized realloc frees the allocation");
+    rejects([&] { invoke("free", {grown}); }, "Realloc zero does not leave a live block");
+    auto zeroed = invoke("calloc", {64, 64});
+    auto bytes = m.readable(zeroed, 4096);
+    check(std::ranges::all_of(bytes, [](auto byte) { return byte == std::byte{}; }),
+          "calloc clears reused storage after uninitialized malloc");
+    invoke("free", {zeroed});
+    auto text = m.string("still terminated");
+    check(m.load<char>(text + 16) == 0, "Internal string allocation still supplies a trailing NUL");
+    rejects([&] { m.allocate(SIZE_MAX); }, "Allocation rounding cannot wrap an oversized request");
+
+    auto pages = m.allocate(3 * 4096, guest::Read | guest::Write, 4096);
+    auto tail = pages + 4096 - 4;
+    std::memcpy(m.writable(tail, 4).data(), "AbCd", 4);
+    m.protect(pages + 4096, 4096, 0);
+    check(invoke("strnlen", {tail, 4}) == 4 && invoke("strnlen", {0, 0}) == 0,
+          "Bounded length scans stop before an inaccessible page and accept a zero limit");
+    auto duplicate = invoke("strndup", {tail, 4});
+    check(m.string(duplicate) == "AbCd" && m.load<char>(duplicate + 4) == 0,
+          "strndup only reads its bounded prefix and explicitly terminates uninitialized storage");
+    auto empty = invoke("strndup", {0, 0});
+    check(m.string(empty).empty(), "Zero-length strndup does not dereference its input");
+    auto same = m.string("AbCd extra"), folded = m.string("aBcD");
+    check(invoke("strncmp", {tail, same, 4}) == 0 && invoke("strncasecmp", {tail, folded, 4}) == 0 &&
+              invoke("strncmp", {0, 0, 0}) == 0,
+          "Bounded comparisons avoid materializing or reading complete strings");
+    m.store(tail + 3, char{});
+    check(invoke("strlen", {tail}) == 3 && invoke("__strlen_chk", {tail, 4}) == 3,
+          "Length scans find a terminator at the last readable byte");
+    rejects([&] { invoke("__strlen_chk", {tail, 3}); },
+            "Fortified length rejects a missing in-range terminator");
+    m.store(tail + 3, char{'d'});
+    rejects([&] { invoke("strlen", {tail}); }, "Unbounded length still faults at inaccessible pages");
+    auto high = m.string(std::string(1, std::bit_cast<char>(std::uint8_t{0x80}))),
+         low = m.string(std::string(1, char(0x7f)));
+    check(static_cast<std::int64_t>(invoke("strcmp", {high, low})) > 0,
+          "String ordering compares unsigned guest bytes");
+    auto crossing = pages + 2 * 4096 - 1;
+    m.protect(pages + 4096, 4096, guest::Read | guest::Write);
+    m.store(crossing, std::uint32_t{0x10000});
+    m.store(crossing + 4, std::uint32_t{});
+    auto wide = m.allocate(8);
+    m.store(wide, std::uint32_t{0x10000});
+    check(invoke("wcscmp", {crossing, wide}) == 0,
+          "Wide comparisons preserve 32-bit units at unaligned page boundaries");
+    m.store(wide, std::uint32_t{0xffff});
+    check(static_cast<std::int64_t>(invoke("wmemcmp", {crossing, wide, 1})) > 0 &&
+              invoke("wmemcmp", {0, 0, 0}) == 0,
+          "Wide comparisons retain Android unit width and zero-limit behavior");
+    m.protect(pages + 2 * 4096, 4096, 0);
+    rejects([&] { invoke("wmemcmp", {crossing, wide, 1}); },
+            "Wide units crossing an inaccessible page still fault");
+
+    auto first = r.traps.add("repeated-name", [](auto &c) { c.x(0, 1); });
+    auto second = r.traps.add("repeated-name", [](auto &c) { c.x(0, 2); });
+    r.cpu.call(first);
+    r.cpu.call(second);
+    r.cpu.call(second);
+    check(r.cpu.statistics()["imports"]["repeated-name"] == 3,
+          "Statistics accumulate separate traps with the same name");
+    r.cpu.profiling(true);
+    auto reentrant = r.traps.add("profile/reentrant", [&](auto &c) { c.x(0, c.call(first)); });
+    check(r.cpu.call(reentrant) == 1 && r.cpu.statistics()["jit_wall_ms"].get<double>() > 0 &&
+              r.cpu.statistics()["import_handler_wall_ms"].get<double>() > 0,
+          "Opt-in JIT and handler timing supports nested guest callbacks");
+    rejects([&] { r.traps.at(0); }, "Lazy trap diagnostics still reject invalid IDs");
+    rejects([&] { invoke("glClear", {0x4000}); }, "Uninitialized graphics fails with a diagnostic");
+
+    auto jump = m.allocate(192);
+    m.store(jump + 104, std::uint64_t{0xfeedface});
+    auto program = m.allocate(4096, guest::Read | guest::Write, 4096);
+    const std::array<std::uint32_t, 17> code{
+        0xaa0003f3, 0xaa0103f4, 0xaa0203f5, 0xaa1e03f6, 0xaa0303f7, // retain args and LR
+        0xaa1303e0, 0xd63f0280, 0xb5000100,                         // setjmp; cbnz x0, return
+        0xaa1303e0, 0xaa1703e1, 0xd2800013, 0xd2800016,             // corrupt saved x19 and x22
+        0xd63f02a0, 0xd4200000, 0xd4200000,                         // longjmp must bypass these breakpoints
+        0xaa1603fe, 0xd65f03c0};                                    // return using restored x22
+    m.write(program, std::as_bytes(std::span(code)));
+    m.protect(program, 4096, guest::Read | guest::Execute);
+    for (size_t i = 8; i < 16; ++i)
+        r.cpu.f64(i, i + 0.25);
+    check(r.cpu.call(program, std::array{jump, r.linker.symbol("setjmp"), r.linker.symbol("longjmp"),
+                                         Address{0}}) == 1 &&
+              r.cpu.call(program, std::array{jump, r.linker.symbol("setjmp"), r.linker.symbol("longjmp"),
+                                             Address{37}}) == 37,
+          "Bulk jump buffers restore guest SP, LR, callee-saved registers and longjmp return values");
+    check(m.load<std::uint64_t>(jump + 104) == 0xfeedface && m.load<double>(jump + 112) == 8.25 &&
+              m.load<double>(jump + 168) == 15.25,
+          "Jump-buffer layout preserves its reserved hole and all saved FP registers");
+    android::Jni::NativeBinding binding;
+    r.jni->register_native("org/example/Cache", "run", "()V", first);
+    check(r.jni->native_cached(binding, "org/example/Cache", "run", "()V") == first,
+          "Native frame entry points can be cached");
+    r.jni->register_native("org/example/Cache", "run", "()V", second);
+    check(r.jni->native_cached(binding, "org/example/Cache", "run", "()V") == second,
+          "Native re-registration invalidates cached targets");
+    auto table = m.load<Address>(r.jni->environment());
+    auto clazz = r.jni->class_ref("org/example/Cache");
+    r.cpu.call(m.load<Address>(table + 216 * 8), std::array{r.jni->environment(), clazz});
+    check(r.jni->native_cached(binding, "org/example/Cache", "run", "()V") == 0,
+          "UnregisterNatives invalidates cached frame targets");
+
+    TimingSummary summary;
+    for (size_t i = 1; i <= 1000; ++i)
+        summary.add(std::chrono::nanoseconds(i * 1000));
+    auto statistics = summary.report();
+    check(statistics["samples"] == 1000 && std::abs(statistics["mean"].get<double>() - 0.5005) < 1e-9 &&
+              statistics["max"] == 1.0 && statistics["p50"].get<double>() >= 0.5 &&
+              statistics["p50"].get<double>() <= 0.5 * 1.03125,
+          "Streaming timings retain exact mean/max and explicitly bounded percentile error");
+    FrameTimings stages;
+    int calls = 0;
+    stages.measure(FrameStage::Events, [&] { ++calls; });
+    check(calls == 1 && stages.report().empty(),
+          "Disabled stage timing executes work without recording samples");
+    stages.enabled = true;
+    rejects([&] { stages.measure(FrameStage::NativeDraw, [] { throw Error("timed fault"); }); },
+            "Stage timing preserves failures");
+    check(stages.report()["native_draw"]["samples"] == 1, "Failed stages still record their elapsed time");
 }
 void jni_and_storage() {
     auto root = fs::current_path() / "test-artifacts" / path_from_utf8("runtime-" + timestamp());
@@ -614,6 +769,7 @@ int main() {
         memory_and_cpu();
         execution_limits();
         elf_loading();
+        performance_contracts();
         jni_and_storage();
         worker_failure_waits();
         std::cout << checks << " contract checks passed\n";

@@ -9,6 +9,9 @@ constexpr std::string_view activity = "com/popcap/SexyAppFramework/SexyAppFramew
                            surface = "com/popcap/SexyAppFramework/AndroidSurfaceView";
 class Pvz2 final : public android::GameAdapter {
     Address activity_{}, surface_{}, http_proxy_{};
+    Address clear_target_{};
+    std::uint64_t clear_revision_{};
+    android::Jni::NativeBinding draw_binding_;
     int width_ = 1280, height_ = 720;
     host::Viewport viewport_{0, 0, 1280, 720};
     bool down_{}, keyboard_{};
@@ -687,11 +690,22 @@ class Pvz2 final : public android::GameAdapter {
         // AndroidRenderer sleeps to its requested frame rate and clears before native drawing.
         auto fps = options_.fps_limit ? options_.fps_limit : frame_rate_.load();
         auto interval = std::chrono::nanoseconds(1'000'000'000 / fps);
-        if (previous_frame_ != std::chrono::steady_clock::time_point{})
-            std::this_thread::sleep_until(previous_frame_ + interval);
+        r.timings.measure(FrameStage::Pacing, [&] {
+            if (previous_frame_ != std::chrono::steady_clock::time_point{})
+                std::this_thread::sleep_until(previous_frame_ + interval);
+        });
         previous_frame_ = std::chrono::steady_clock::now();
-        r.cpu.call(r.linker.symbol("glClear"), std::array<Address, 1>{0x4000});
-        call(r, surface, "Native_onDrawFrame", "()V");
+        if (!clear_target_ || clear_revision_ != r.linker.revision()) {
+            clear_target_ = r.linker.symbol("glClear");
+            clear_revision_ = r.linker.revision();
+        }
+        r.timings.measure(FrameStage::NativeDraw, [&] {
+            r.cpu.call(clear_target_, std::array<Address, 1>{0x4000});
+            auto draw = r.jni->native_cached(draw_binding_, surface, "Native_onDrawFrame", "()V");
+            require(draw != 0, "PVZ2 native binding missing: Native_onDrawFrame()V");
+            r.jni->call_native(r.cpu, draw, std::array{r.jni->environment(), surface_}, UINT64_MAX,
+                               std::chrono::seconds(60));
+        });
     }
     void event(android::Runtime &r, const host::Event &event) override {
         if (event.type == host::EventType::Focus && audio_focused_ == event.focused)

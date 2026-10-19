@@ -167,13 +167,15 @@ std::string Jni::text(Address ref) const {
 Object &Jni::get(Address ref) {
     std::lock_guard lock(runtime_.state_mutex);
     auto it = objects_.find(ref);
-    require(it != objects_.end(), std::format("Invalid JNI reference {:#x}", ref));
+    if (it == objects_.end())
+        throw Error(std::format("Invalid JNI reference {:#x}", ref));
     return *it->second;
 }
 const Object &Jni::get(Address ref) const {
     std::lock_guard lock(runtime_.state_mutex);
     auto it = objects_.find(ref);
-    require(it != objects_.end(), std::format("Invalid JNI reference {:#x}", ref));
+    if (it == objects_.end())
+        throw Error(std::format("Invalid JNI reference {:#x}", ref));
     return *it->second;
 }
 Address Jni::class_ref(std::string name) {
@@ -252,6 +254,7 @@ void Jni::register_native(std::string type, std::string name, std::string signat
     std::lock_guard lock(runtime_.state_mutex);
     require(runtime_.memory.valid(target, 4, guest::Execute), "JNI registration target is not executable");
     natives_[key(normalized(type), name, signature)] = target;
+    ++native_revision_;
 }
 Address Jni::native(std::string_view type, std::string_view name, std::string_view signature) const {
     std::lock_guard lock(runtime_.state_mutex);
@@ -265,6 +268,18 @@ Address Jni::native(std::string_view type, std::string_view name, std::string_vi
     auto end = signature.find(')');
     require(signature.starts_with('(') && end != signature.npos, "Invalid native JNI signature");
     return runtime_.linker.symbol(symbol + "__" + jni_escape(signature.substr(1, end - 1)));
+}
+Address Jni::native_cached(NativeBinding &binding, std::string_view type, std::string_view name,
+                           std::string_view signature) const {
+    std::lock_guard lock(runtime_.state_mutex);
+    auto revision = runtime_.linker.revision();
+    if (!binding.address || binding.registration_revision != native_revision_ ||
+        binding.linker_revision != revision) {
+        binding.address = native(type, name, signature);
+        binding.registration_revision = native_revision_;
+        binding.linker_revision = revision;
+    }
+    return binding.address;
 }
 Address Jni::environment(guest::Cpu &cpu) {
     ThreadContext context(this, cpu.tls());
@@ -442,7 +457,8 @@ std::uint64_t Jni::invoke(guest::Cpu &cpu, bool is_static, int variant, size_t r
         if (!handler)
             find(method.class_name);
     }
-    require(bool(handler), "Unimplemented Java method: " + name);
+    if (!handler)
+        throw Error("Unimplemented Java method: " + name);
     JavaCall call{runtime_,       cpu, cpu.x(1), method.class_name, method.name, method.signature,
                   std::move(args)};
     auto result = handler(call);
@@ -748,8 +764,10 @@ Jni::Jni(Runtime &runtime) : runtime_(runtime) {
         return 0;
     });
     slot(216, "UnregisterNatives", [this](auto &c) {
+        std::lock_guard lock(runtime_.state_mutex);
         auto prefix = get(c.x(1)).fields.at("name").template get<std::string>() + "#";
         std::erase_if(natives_, [&](const auto &entry) { return entry.first.starts_with(prefix); });
+        ++native_revision_;
         return 0;
     });
     slot(217, "MonitorEnter", [this](auto &c) {

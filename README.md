@@ -36,7 +36,7 @@ The compiler version is checked during configuration. An explicit `-DACP_ALLOW_U
 
 The current issue list and validation sessions are tracked in [docs/issues.md](docs/issues.md).
 
-Performance findings, measurement limits and the optimization roadmap are in [docs/performance-review.md](docs/performance-review.md).
+Implemented optimizations, recorded before/after measurements, validation limits and remaining opportunities are tracked in [docs/performance-review.md](docs/performance-review.md). Use `tools/run-performance.ps1` and `tools/compare-performance.ps1` to record another pass. Add `--performance-profile` to a game run for stage/JIT/import wall timings, or build with `tools/build.ps1 -ProfileSymbols` for optimized profiling symbols.
 
 ## Install
 

@@ -1,4 +1,4 @@
-param([ValidateSet('release','debug')][string]$Configuration = 'release', [switch]$Test)
+param([ValidateSet('release','debug')][string]$Configuration = 'release', [switch]$Test, [switch]$ProfileSymbols)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -12,7 +12,8 @@ if (!(Get-Command ninja -ErrorAction SilentlyContinue)) {
 }
 Push-Location -LiteralPath $projectRoot
 try {
-    cmake --preset "windows-$Configuration"
+    $profileValue = if ($ProfileSymbols) { 'ON' } else { 'OFF' }
+    cmake --preset "windows-$Configuration" "-DACP_PROFILE_SYMBOLS=$profileValue"
     if ($LASTEXITCODE) { throw 'CMake configure failed.' }
     cmake --build --preset "windows-$Configuration" --parallel 8
     if ($LASTEXITCODE) { throw 'Build failed.' }

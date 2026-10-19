@@ -10,8 +10,10 @@ Memory::~Memory() {
     if (arena_)
         VirtualFree(arena_, 0, MEM_RELEASE);
 }
-Address Memory::allocate(size_t size, unsigned permissions, size_t alignment) {
+Address Memory::allocate(size_t size, unsigned permissions, size_t alignment, Initialize initialize) {
     std::lock_guard lock(mutex_);
+    require(size < capacity, "Guest allocation exceeds address space");
+    require(alignment && std::has_single_bit(alignment), "Guest alignment must be a power of two");
     size = static_cast<size_t>(align_up(std::max<size_t>(size, 1), 16));
     require(size < capacity, "Guest allocation exceeds address space");
     Address address{};
@@ -52,8 +54,34 @@ Address Memory::allocate(size_t size, unsigned permissions, size_t alignment) {
     allocations_.emplace(address, size);
     ++allocation_calls_;
     live_bytes_ += size;
-    std::memset(arena_ + address, 0, size);
+    if (initialize == Initialize::Zero) {
+        std::memset(arena_ + address, 0, size);
+        zeroed_bytes_ += size;
+    }
     return address;
+}
+Address Memory::reallocate(Address address, size_t size) {
+    if (!size) {
+        release(address);
+        return 0;
+    }
+    if (!address)
+        return allocate(size, Read | Write, 16, Initialize::Uninitialized);
+    std::lock_guard lock(mutex_);
+    auto it = allocations_.find(address);
+    require(it != allocations_.end(), "Invalid guest realloc");
+    // Retain the usable capacity on shrink, as native heaps do. No clearing or copy is required.
+    if (size <= it->second) {
+        ++realloc_in_place_;
+        return address;
+    }
+    auto old_size = it->second;
+    auto out = allocate(size, Read | Write, 16, Initialize::Uninitialized);
+    write(out, readable(address, old_size));
+    release(address);
+    ++realloc_moved_;
+    realloc_copied_bytes_ += old_size;
+    return out;
 }
 void Memory::release(Address address) {
     if (!address)
@@ -109,6 +137,10 @@ void Memory::erase_free(std::map<Address, size_t>::iterator item) {
 Json Memory::statistics() const {
     std::lock_guard lock(mutex_);
     return {{"allocation_calls", allocation_calls_},
+            {"zeroed_bytes", zeroed_bytes_},
+            {"realloc_in_place", realloc_in_place_},
+            {"realloc_moved", realloc_moved_},
+            {"realloc_copied_bytes", realloc_copied_bytes_},
             {"live_allocations", allocations_.size()},
             {"live_bytes", live_bytes_},
             {"address_high_water", next_},
@@ -169,6 +201,19 @@ std::string Memory::string(Address address, size_t maximum) const {
             return result;
     }
     throw Error("Unterminated guest string");
+}
+size_t Memory::string_length(Address address, size_t maximum) const {
+    size_t length = 0;
+    while (length < maximum) {
+        auto current = address + length;
+        auto chunk = std::min(maximum - length, page_size - size_t(current % page_size));
+        auto bytes = readable(current, chunk);
+        auto data = reinterpret_cast<const char *>(bytes.data());
+        if (auto end = static_cast<const char *>(std::memchr(data, 0, chunk)))
+            return length + static_cast<size_t>(end - data);
+        length += chunk;
+    }
+    return length;
 }
 Address Memory::string(std::string_view text) {
     auto address = allocate(text.size() + 1);

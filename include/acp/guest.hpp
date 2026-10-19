@@ -9,6 +9,14 @@
 
 namespace acp::guest {
 enum Permission : unsigned { Read = 1, Write = 2, Execute = 4 };
+enum class Initialize { Zero, Uninitialized };
+struct StringHash {
+    using is_transparent = void;
+    size_t operator()(std::string_view text) const noexcept {
+        return std::hash<std::string_view>{}(text);
+    }
+};
+using SymbolIndex = std::unordered_map<std::string, Address, StringHash, std::equal_to<>>;
 template <class T = void> struct Pointer {
     Address address{};
     explicit operator bool() const {
@@ -22,7 +30,9 @@ class Memory {
     Memory();
     ~Memory();
     Memory(const Memory &) = delete;
-    Address allocate(size_t size, unsigned permissions = Read | Write, size_t alignment = 16);
+    Address allocate(size_t size, unsigned permissions = Read | Write, size_t alignment = 16,
+                     Initialize initialize = Initialize::Zero);
+    Address reallocate(Address address, size_t size);
     void release(Address address);
     void shrink_pages(Address address, size_t size);
     void protect(Address address, size_t size, unsigned permissions);
@@ -40,6 +50,7 @@ class Memory {
         write(address, std::as_bytes(std::span(&value, 1)));
     }
     std::string string(Address address, size_t maximum = 1 << 20) const;
+    size_t string_length(Address address, size_t maximum = 1 << 20) const;
     Address string(std::string_view text);
     void **page_table() {
         return pages_.data();
@@ -56,7 +67,8 @@ class Memory {
     std::vector<unsigned char> permissions_;
     std::map<Address, size_t> allocations_, free_;
     std::map<size_t, std::set<Address>> free_sizes_;
-    std::uint64_t allocation_calls_{}, live_bytes_{};
+    std::uint64_t allocation_calls_{}, live_bytes_{}, zeroed_bytes_{};
+    std::uint64_t realloc_in_place_{}, realloc_moved_{}, realloc_copied_bytes_{};
     void add_free(Address address, size_t size);
     void release_range(Address address, size_t size);
     void erase_free(std::map<Address, size_t>::iterator item);
@@ -157,6 +169,7 @@ class Cpu {
     void tls(Address value);
     void invalidate(Address address, size_t size);
     void request_stop();
+    void profiling(bool enabled);
     Json statistics() const;
     Memory &memory() {
         return memory_;
@@ -175,6 +188,7 @@ struct LoadedImage {
     ElfImage elf;
     Address base{};
     bool initialized{};
+    SymbolIndex exports;
 };
 class Linker {
   public:
@@ -195,13 +209,17 @@ class Linker {
     const auto &provided() const {
         return provided_;
     }
+    std::uint64_t revision() const {
+        return revision_;
+    }
     std::string current_initializer;
 
   private:
     Memory &memory_;
     TrapTable &traps_;
     std::vector<std::unique_ptr<LoadedImage>> images_;
-    std::unordered_map<std::string, Address> provided_;
+    SymbolIndex provided_, symbols_;
+    std::uint64_t revision_{};
     std::vector<std::string> system_libraries_;
 };
 } // namespace acp::guest

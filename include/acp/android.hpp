@@ -2,6 +2,7 @@
 #include <acp/guest.hpp>
 #include <acp/host.hpp>
 #include <acp/package.hpp>
+#include <acp/performance.hpp>
 
 #include <atomic>
 #include <condition_variable>
@@ -28,6 +29,11 @@ struct JavaCall {
 using JavaHandler = std::function<std::uint64_t(JavaCall &)>;
 class Jni {
   public:
+    // Keep one cache per fixed native signature. Registration and image changes invalidate it.
+    struct NativeBinding {
+        Address address{};
+        std::uint64_t registration_revision{}, linker_revision{};
+    };
     explicit Jni(Runtime &runtime);
     ~Jni();
     Address environment() const {
@@ -59,6 +65,8 @@ class Jni {
                          std::string category, std::string behavior, JavaHandler handler);
     void field(std::string class_name, std::string name, std::string signature, std::uint64_t value);
     Address native(std::string_view class_name, std::string_view name, std::string_view signature) const;
+    Address native_cached(NativeBinding &binding, std::string_view class_name, std::string_view name,
+                          std::string_view signature) const;
     void register_native(std::string class_name, std::string name, std::string signature, Address target);
     Json describe() const;
 
@@ -75,6 +83,7 @@ class Jni {
     std::unordered_map<std::string, JavaHandler> hooks_;
     std::unordered_map<std::string, std::uint64_t> fields_;
     std::unordered_map<std::string, Address> natives_;
+    std::uint64_t native_revision_ = 1;
     std::map<std::string, std::uint64_t> calls_;
     std::map<Address, std::vector<std::vector<Address>>> frames_;
     std::map<Address, Address> exceptions_;
@@ -134,6 +143,7 @@ struct RuntimeOptions {
     unsigned target_sdk = 1;
     std::uint32_t application_flags = 4;
     bool automatic_audio_callbacks = true;
+    bool performance_profile = false;
 };
 class Runtime {
   public:
@@ -146,6 +156,7 @@ class Runtime {
     guest::Linker linker;
     guest::Cpu cpu;
     RuntimeOptions options;
+    FrameTimings timings;
     std::unique_ptr<host::Services> host;
     std::unique_ptr<Jni> jni;
     std::unique_ptr<Graphics> graphics;

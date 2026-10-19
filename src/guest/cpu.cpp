@@ -17,7 +17,8 @@ Address TrapTable::add(std::string name, Handler handler) {
     return address;
 }
 const Trap &TrapTable::at(std::uint32_t id) const {
-    require(id > 0 && id <= traps_.size(), std::format("Unknown guest trap {}", id));
+    if (!id || id > traps_.size())
+        throw Error(std::format("Unknown guest trap {}", id));
     return traps_[id - 1];
 }
 std::vector<std::string> TrapTable::names() const {
@@ -43,6 +44,29 @@ struct Cpu::Impl final : Dynarmic::A64::UserCallbacks {
     std::uint64_t instructions{}, calls{};
     std::uint64_t largest_call_instructions{}, largest_call_function{}, largest_call_elapsed_ms{};
     std::array<std::uint64_t, 65536> imports{};
+    bool profile_enabled{};
+    std::uint64_t jit_ns{}, handler_ns{}, read_callbacks{}, write_callbacks{}, code_callbacks{};
+    template <class F> void measure(std::uint64_t &counter, F &&work) {
+        if (!profile_enabled) {
+            work();
+            return;
+        }
+        struct Scope {
+            Impl &owner;
+            std::uint64_t &counter;
+            std::uint64_t nested_before = owner.jit_ns + owner.handler_ns;
+            std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            ~Scope() {
+                auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                   std::chrono::steady_clock::now() - start)
+                                   .count();
+                auto nested = owner.jit_ns + owner.handler_ns - nested_before;
+                counter += static_cast<std::uint64_t>(elapsed) -
+                           std::min(static_cast<std::uint64_t>(elapsed), nested);
+            }
+        } scope{*this, counter};
+        work();
+    }
     explicit Impl(Cpu &owner_, Memory &mem, TrapTable &table, size_t processor)
         : owner(owner_), memory(mem), traps(table) {
         static std::mutex lock;
@@ -84,7 +108,9 @@ struct Cpu::Impl final : Dynarmic::A64::UserCallbacks {
             fault = std::move(message);
         jit->HaltExecution(Dynarmic::HaltReason::MemoryAbort);
     }
-    template <class T> T read(Address a) {
+    template <class T> T read(Address a, bool instruction = false) {
+        if (profile_enabled && !instruction)
+            ++read_callbacks;
         try {
             return memory.load<T>(a);
         } catch (const std::exception &e) {
@@ -93,6 +119,8 @@ struct Cpu::Impl final : Dynarmic::A64::UserCallbacks {
         }
     }
     template <class T> void write(Address a, T value) {
+        if (profile_enabled)
+            ++write_callbacks;
         try {
             memory.store(a, value);
         } catch (const std::exception &e) {
@@ -100,6 +128,8 @@ struct Cpu::Impl final : Dynarmic::A64::UserCallbacks {
         }
     }
     template <class T> bool exclusive(Address a, T desired, T expected) {
+        if (profile_enabled)
+            ++write_callbacks;
         try {
             return memory.compare_exchange(a, std::as_bytes(std::span(&expected, 1)),
                                            std::as_bytes(std::span(&desired, 1)));
@@ -109,11 +139,13 @@ struct Cpu::Impl final : Dynarmic::A64::UserCallbacks {
         }
     }
     std::optional<std::uint32_t> MemoryReadCode(Address a) override {
+        if (profile_enabled)
+            ++code_callbacks;
         if (!memory.valid(a, 4, Execute)) {
             fail(std::format("Guest execute fault at {:#x}", a));
             return {};
         }
-        return read<std::uint32_t>(a);
+        return read<std::uint32_t>(a, true);
     }
     std::uint8_t MemoryRead8(Address a) override {
         return read<std::uint8_t>(a);
@@ -192,7 +224,8 @@ Cpu::Cpu(Memory &memory, TrapTable &traps, size_t processor)
 Cpu::~Cpu() = default;
 std::uint64_t Cpu::call(Address function, std::span<const std::uint64_t> args, std::uint64_t budget,
                         std::chrono::milliseconds timeout) {
-    require(memory_.valid(function, 4, Execute), std::format("Invalid guest call target {:#x}", function));
+    if (!memory_.valid(function, 4, Execute))
+        throw Error(std::format("Invalid guest call target {:#x}", function));
     auto &p = *impl_;
     ++p.calls;
     auto &jit = *p.jit;
@@ -247,12 +280,13 @@ std::uint64_t Cpu::call(Address function, std::span<const std::uint64_t> args, s
             p.ticks = slice;
             p.svc_pending = false;
             jit.ClearHalt(static_cast<Dynarmic::HaltReason>(UINT32_MAX));
-            jit.Run();
+            p.measure(p.jit_ns, [&] { jit.Run(); });
             p.instructions += slice - p.ticks;
             remaining -= slice - p.ticks;
             if (!p.fault.empty())
                 throw Error(p.fault);
-            require(std::chrono::steady_clock::now() < deadline, "Guest call timeout");
+            if (deadline != std::chrono::steady_clock::time_point::max())
+                require(std::chrono::steady_clock::now() < deadline, "Guest call timeout");
             if (!p.svc_pending)
                 continue;
             if (p.pending == 0xffff) {
@@ -269,12 +303,12 @@ std::uint64_t Cpu::call(Address function, std::span<const std::uint64_t> args, s
             if (!p.pending) {
                 ++p.imports[0];
                 require(bool(syscall), "Unhandled Android syscall");
-                syscall(*this);
+                p.measure(p.handler_ns, [&] { syscall(*this); });
             } else {
                 const auto &trap = p.traps.at(p.pending);
                 ++p.imports[p.pending];
                 current_import = trap.name;
-                trap.handler(*this);
+                p.measure(p.handler_ns, [&] { trap.handler(*this); });
             }
         }
     } catch (const std::exception &error) {
@@ -381,17 +415,29 @@ void Cpu::request_stop() {
     impl_->stopped = true;
     impl_->jit->HaltExecution(Dynarmic::HaltReason::UserDefined8);
 }
+void Cpu::profiling(bool enabled) {
+    impl_->profile_enabled = enabled;
+}
 Json Cpu::statistics() const {
     const auto &p = *impl_;
     Json imports = Json::object();
     for (size_t i = 1; i < 65535; ++i)
-        if (p.imports[i])
-            imports[p.traps.at(static_cast<std::uint32_t>(i)).name] = p.imports[i];
+        if (p.imports[i]) {
+            auto &count = imports[p.traps.at(static_cast<std::uint32_t>(i)).name];
+            if (count.is_null())
+                count = std::uint64_t{};
+            count = count.get<std::uint64_t>() + p.imports[i];
+        }
     return {{"instructions", p.instructions},
             {"calls", p.calls},
             {"largest_call_instructions", p.largest_call_instructions},
             {"largest_call_function", p.largest_call_function},
             {"largest_call_elapsed_ms", p.largest_call_elapsed_ms},
+            {"timing_enabled", p.profile_enabled},
+            {"jit_wall_ms", p.jit_ns / 1e6},
+            {"import_handler_wall_ms", p.handler_ns / 1e6},
+            {"memory_callbacks",
+             {{"read", p.read_callbacks}, {"write", p.write_callbacks}, {"code", p.code_callbacks}}},
             {"imports", imports},
             {"syscalls", p.imports[0]}};
 }
