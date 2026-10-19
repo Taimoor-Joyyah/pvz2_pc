@@ -41,6 +41,7 @@ struct Cpu::Impl final : Dynarmic::A64::UserCallbacks {
     std::string fault;
     std::atomic_bool stopped{};
     std::uint64_t instructions{}, calls{};
+    std::uint64_t largest_call_instructions{}, largest_call_function{}, largest_call_elapsed_ms{};
     std::array<std::uint64_t, 65536> imports{};
     explicit Impl(Cpu &owner_, Memory &mem, TrapTable &table, size_t processor)
         : owner(owner_), memory(mem), traps(table) {
@@ -214,7 +215,10 @@ std::uint64_t Cpu::call(Address function, std::span<const std::uint64_t> args, s
         current_import = saved_import;
         jit.ClearHalt(static_cast<Dynarmic::HaltReason>(UINT32_MAX));
     };
+    const auto started = std::chrono::steady_clock::now();
+    auto remaining = budget;
     try {
+        require(timeout.count() > 0, "Guest call timeout must be positive");
         auto extra = args.size() > 8 ? (args.size() - 8) * 8 : 0;
         auto frame = align_up(extra + 64, 16);
         require(saved_sp >= p.stack + frame, "Guest stack exhausted");
@@ -229,9 +233,11 @@ std::uint64_t Cpu::call(Address function, std::span<const std::uint64_t> args, s
         jit.SetPC(function);
         p.ticks = budget;
         p.fault.clear();
-        auto remaining = budget;
-        auto deadline = budget == UINT64_MAX ? std::chrono::steady_clock::time_point::max()
-                                             : std::chrono::steady_clock::now() + timeout;
+        // Instruction quotas and wall-clock deadlines are independent. Long-lived
+        // pthread entry points explicitly opt out of both; frame calls retain a deadline.
+        const auto deadline = timeout == std::chrono::milliseconds::max()
+                                  ? std::chrono::steady_clock::time_point::max()
+                                  : started + timeout;
         for (;;) {
             require(!p.stopped.load(), "Guest execution cancelled");
             if (checkpoint)
@@ -251,6 +257,12 @@ std::uint64_t Cpu::call(Address function, std::span<const std::uint64_t> args, s
                 continue;
             if (p.pending == 0xffff) {
                 auto result = jit.GetRegister(0);
+                if (budget - remaining > p.largest_call_instructions) {
+                    p.largest_call_instructions = budget - remaining;
+                    p.largest_call_function = function;
+                    p.largest_call_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                  std::chrono::steady_clock::now() - started).count();
+                }
                 restore();
                 return result;
             }
@@ -270,7 +282,12 @@ std::uint64_t Cpu::call(Address function, std::span<const std::uint64_t> args, s
             last_fault = {{"pc", jit.GetPC()},        {"lr", jit.GetRegister(30)},
                           {"sp", jit.GetSP()},        {"tls", p.thread_pointer},
                           {"import", current_import}, {"registers", jit.GetRegisters()},
-                          {"error", error.what()}};
+                          {"error", error.what()},
+                          {"function", function}, {"instruction_budget", budget},
+                          {"instructions_executed", budget - remaining},
+                          {"timeout_ms", timeout.count()},
+                          {"elapsed_ms", std::chrono::duration_cast<std::chrono::milliseconds>(
+                                             std::chrono::steady_clock::now() - started).count()}};
             try {
                 Json frames = Json::array();
                 auto frame = jit.GetRegister(29);
@@ -372,6 +389,9 @@ Json Cpu::statistics() const {
             imports[p.traps.at(static_cast<std::uint32_t>(i)).name] = p.imports[i];
     return {{"instructions", p.instructions},
             {"calls", p.calls},
+            {"largest_call_instructions", p.largest_call_instructions},
+            {"largest_call_function", p.largest_call_function},
+            {"largest_call_elapsed_ms", p.largest_call_elapsed_ms},
             {"imports", imports},
             {"syscalls", p.imports[0]}};
 }

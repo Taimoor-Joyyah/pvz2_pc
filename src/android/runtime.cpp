@@ -375,7 +375,12 @@ Json Runtime::report() const {
 }
 int Runtime::open_file(const fs::path &path, std::string_view mode) {
     std::lock_guard lock(state_mutex);
-    auto fp = _wfopen(path.c_str(), widen(mode).c_str());
+    // Android stdio is byte preserving even when the caller omits "b". Windows
+    // text mode would translate CRLF and treat 0x1a inside streamed media as EOF.
+    std::string host_mode(mode);
+    if (host_mode.find('b') == host_mode.npos)
+        host_mode += 'b';
+    auto fp = _wfopen(path.c_str(), widen(host_mode).c_str());
     if (!fp)
         return -1;
     int flags = mode.find('+') != mode.npos ? 2 : mode.starts_with('r') ? 0 : 1;

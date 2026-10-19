@@ -127,6 +127,47 @@ void package_contracts() {
     check(report["support_status"] == "unverified" && report["regression_testing_required"] == true,
           "Static update comparison never qualifies an untested version");
 }
+void execution_limits() {
+    guest::Memory memory;
+    guest::TrapTable traps(memory);
+    guest::Cpu cpu(memory, traps);
+    auto code = memory.allocate(4096, guest::Read | guest::Write, 4096);
+    const std::array<std::uint32_t, 3> countdown{0xf1000400, 0x54ffffe1, 0xd65f03c0};
+    memory.write(code, std::as_bytes(std::span(countdown)));
+    memory.protect(code, 4096, guest::Read | guest::Execute);
+    rejects([&] { cpu.call(code, std::array<Address, 1>{10'000}, 100); },
+            "Explicit guest instruction budgets still stop long calls");
+    check(cpu.last_fault.at("instruction_budget") == 100 &&
+              cpu.last_fault.at("instructions_executed") == 100 &&
+              cpu.last_fault.at("function") == code,
+          "Quota faults identify the call and exhausted budget");
+    check(cpu.call(code, std::array<Address, 1>{10'000}, UINT64_MAX,
+                   std::chrono::seconds(1)) == 0,
+          "Time-bounded calls can finish finite work beyond an instruction quota");
+    check(cpu.statistics().at("largest_call_function") == code &&
+              cpu.statistics().at("largest_call_instructions") > 100,
+          "Completed-call diagnostics identify finite work beyond the old quota");
+    auto slow = traps.add("test/slow-host-call", [](auto &) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    });
+    cpu.last_fault = nullptr;
+    rejects([&] { cpu.call(slow, {}, UINT64_MAX, std::chrono::milliseconds(1)); },
+            "Disabling instruction quotas must retain an explicit wall-clock timeout");
+    check(cpu.last_fault.at("error") == "Guest call timeout" &&
+              cpu.last_fault.at("timeout_ms") == 1 && cpu.last_fault.at("elapsed_ms") >= 20,
+          "Timeout diagnostics retain the actual deadline and elapsed duration");
+    cpu.last_fault = nullptr;
+    unsigned checkpoints{};
+    cpu.checkpoint = [&] {
+        if (++checkpoints == 2)
+            cpu.request_stop();
+    };
+    rejects([&] { cpu.call(code, std::array<Address, 1>{UINT64_MAX}, UINT64_MAX,
+                          std::chrono::milliseconds::max()); },
+            "Unlimited guest workers remain cancellable");
+    check(cpu.last_fault.at("error") == "Guest execution cancelled",
+          "Cancellation remains distinct from a quota or deadline failure");
+}
 void memory_and_cpu() {
     guest::Memory memory;
     guest::TrapTable traps(memory);
@@ -571,6 +612,7 @@ int main() {
         input_replay();
         package_contracts();
         memory_and_cpu();
+        execution_limits();
         elf_loading();
         jni_and_storage();
         worker_failure_waits();

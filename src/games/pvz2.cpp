@@ -89,11 +89,12 @@ class Pvz2 final : public android::GameAdapter {
         const bool startup =
             name == "Native_GameAppInitialize" || name == "Native_applicationWillFinishLaunching" ||
             name == "Native_applicationDidFinishLaunching" || name == "Native_onSurfaceCreated";
-        // Early draw callbacks also perform synchronous RTON decoding and resource setup.
+        // Draw callbacks can synchronously load resources and rebuild entire UI trees
+        // at any point in a session. Bound their duration, not their instruction count.
         const bool drawing = name == "Native_onDrawFrame";
         return r.jni->call_native(r.cpu, target(r, type, name, signature), args,
                                   startup   ? 10'000'000'000ull
-                                  : drawing ? 2'000'000'000ull
+                                  : drawing ? UINT64_MAX
                                             : 200'000'000ull,
                                   std::chrono::seconds(startup   ? 120
                                                        : drawing ? 60

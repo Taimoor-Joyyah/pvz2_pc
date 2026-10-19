@@ -68,6 +68,10 @@ from the ELF imports, rather than a guess based on function names.
 - Stream lookahead/pushback is shared with `fread`, `fgetc`, `fgets`, descriptor
   reads and seek/tell. Closing a file invalidates and frees its owned opaque
   handles. Invalid `fflush` handles return `EBADF`.
+- Android `fopen` modes always select binary Windows streams, even for `r`, `w`
+  and `a` without `b`. This preserves Ctrl-Z/CRLF bytes in streamed Wwise media
+  and prevents newline insertion into guest-written files. Read, seek, write
+  and append regressions cover all byte values and an explicit CRLF sequence.
 - Binary128 printf formatting and mixed integer/floating stack arguments work;
   `%Lf` no longer raises the former unsupported-conversion exception.
 - `PROT_NONE` retains its mapping so access can be restored. Remapping and

@@ -1492,7 +1492,8 @@ void install_bionic(Runtime &r) {
         }
         ptr->host = std::thread([ptr, entry, arg, &r] {
             try {
-                ptr->result = ptr->cpu->call(entry, std::array{arg}, UINT64_MAX);
+                ptr->result = ptr->cpu->call(entry, std::array{arg}, UINT64_MAX,
+                                             std::chrono::milliseconds::max());
             } catch (const ThreadExit &e) {
                 ptr->result = e.result;
             } catch (const std::exception &e) {

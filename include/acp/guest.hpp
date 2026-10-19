@@ -135,6 +135,8 @@ class Cpu {
     ~Cpu();
     Cpu(const Cpu &) = delete;
     std::function<void()> checkpoint;
+    // UINT64_MAX disables the instruction quota; milliseconds::max() separately
+    // disables the deadline. Cancellation and worker-failure checks always remain active.
     std::uint64_t call(Address function, std::span<const std::uint64_t> arguments = {},
                        std::uint64_t budget = 200'000'000,
                        std::chrono::milliseconds timeout = std::chrono::seconds(30));

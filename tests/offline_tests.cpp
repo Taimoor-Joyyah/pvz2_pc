@@ -85,6 +85,40 @@ void parsing(android::Runtime &r) {
               m.load<std::array<std::uint64_t, 2>>(destination) == std::array<std::uint64_t, 2>{1, 0x3fff000000000000ull},
           "scanf %Lf stores all 128 bits");
 }
+void binary_streams(android::Runtime &r) {
+    auto &m = r.memory;
+    Bytes data(8192);
+    for (size_t i = 0; i < data.size(); ++i)
+        data[i] = std::byte(i & 255);
+    data[20] = std::byte{0x0d};
+    data[21] = std::byte{0x0a};
+    auto input = r.options.data / "files/streamed-audio.bin";
+    write_bytes(input, data);
+    auto guest_input = m.string(r.working_directory() + "/streamed-audio.bin");
+    auto buffer = m.allocate(data.size());
+    for (const auto *mode : {"r", "rb", "r+"}) {
+        auto stream = call(r, "fopen", {guest_input, m.string(mode)});
+        check(stream && call(r, "fread", {buffer, 1, data.size(), stream}) == data.size() &&
+                  std::ranges::equal(m.readable(buffer, data.size()), data),
+              "Android fopen reads every byte, including Ctrl-Z and CRLF, with or without b");
+        check(call(r, "fseek", {stream, 24, 0}) == 0 &&
+                  call(r, "fread", {buffer, 1, 64, stream}) == 64 &&
+                  std::ranges::equal(m.readable(buffer, 64), std::span(data).subspan(24, 64)) &&
+                  call(r, "ftell", {stream}) == 88,
+              "Streamed audio seeks retain byte offsets across Windows text control bytes");
+        call(r, "fclose", {stream});
+    }
+    m.write(buffer, data);
+    for (const auto *mode : {"w", "w+", "a", "a+", "wb"}) {
+        auto output = r.options.data / path_from_utf8("files/stream-output-" + std::string(mode) + ".bin");
+        write_bytes(output, {});
+        auto stream = call(r, "fopen", {m.string(r.working_directory() + "/" + utf8(output.filename())),
+                                        m.string(mode)});
+        check(stream && call(r, "fwrite", {buffer, 1, data.size(), stream}) == data.size() &&
+                  call(r, "fclose", {stream}) == 0 && read_bytes(output) == data,
+              "Android write and append modes never insert Windows carriage returns");
+    }
+}
 void files(android::Runtime &r) {
     auto &m = r.memory;
     const auto cwd = r.working_directory();
@@ -241,7 +275,7 @@ int main() {
                                 "swscanf", "truncate", "ungetwc", "unlinkat", "utimensat", "vsscanf", "wcstod",
                                 "wcstof", "wcstol", "wcstold", "wcstoll", "wcstoul", "wcstoull"})
             check(r.linker.symbol(name) != 0, "Every previously unresolved import has an explicit implementation");
-        parsing(r); files(r); locks(r); mappings_and_services(r);
+        parsing(r); binary_streams(r); files(r); locks(r); mappings_and_services(r);
         write_json(root / "report.json", r.report());
         std::cout << checks << " offline compatibility checks passed\n";
         return 0;

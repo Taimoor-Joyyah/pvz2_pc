@@ -18,9 +18,11 @@ The launcher imports a package, selects a game adapter, creates Android services
 
 Guest addresses are 64-bit Android addresses in a separate 4 GiB virtual arena. They are never callable Windows pointers. Memory access translates and checks the requested range. Writable pages have a Dynarmic page table entry; executable/read-only pages use checked callbacks. ELF executable permissions are sealed after relocation.
 
-Imports point at generated ARM64 `svc`/`ret` stubs. An SVC halts the JIT; host dispatch runs after the JIT returns. This permits a host service to call back into guest code without recursively entering a running JIT. CPU calls preserve registers and SIMD state, marshal eight integer arguments into registers and remaining arguments onto the guest stack, and enforce execution budgets. Guest faults and unimplemented instructions become diagnostics.
+Imports point at generated ARM64 `svc`/`ret` stubs. An SVC halts the JIT; host dispatch runs after the JIT returns. This permits a host service to call back into guest code without recursively entering a running JIT. CPU calls preserve registers and SIMD state, marshal eight integer arguments into registers and remaining arguments onto the guest stack, and enforce independent instruction quotas and wall-clock deadlines. Disabling a quota does not disable the deadline. Native PVZ2 draw calls can synchronously rebuild UI and load resources, so they use a 60-second deadline without an instruction quota. Long-lived guest pthread entry points explicitly disable both limits; cancellation, worker-failure and memory checks still apply. Reports identify the largest completed call and retain entry point, consumed quota and elapsed time on a fault.
 
 Windows uses LLP64, while Android AArch64 uses LP64. `long`, `wchar_t`, `FILE`, `va_list`, JNI handles, pthread objects, and zlib state require explicit translation. The APK's ARM64 libc++ executes as guest code, retaining its C++ ABI. Host files, synchronization objects, and compression state stay behind guest handles. This does not provide a security sandbox for adversarial native code.
+
+Android file streams preserve bytes regardless of a caller's optional `b` mode flag. The Windows backend always opens them in binary mode, so streamed audio and other assets retain embedded Ctrl-Z and CRLF bytes and seek offsets remain physical byte offsets. Write and append modes follow the same rule.
 
 ## Android services and adapters
 
