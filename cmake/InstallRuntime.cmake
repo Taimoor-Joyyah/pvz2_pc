@@ -33,9 +33,11 @@ install(FILES "${sdl3_SOURCE_DIR}/src/hidapi/LICENSE.txt"
               "${sdl3_SOURCE_DIR}/src/hidapi/LICENSE-orig.txt"
         DESTINATION licenses/SDL3/hidapi COMPONENT Runtime)
 install(FILES "${dynarmic_SOURCE_DIR}/LICENSE.txt" DESTINATION licenses/dynarmic COMPONENT Runtime)
-foreach(dependency IN ITEMS mcl fmt oaknut robin-map zydis zycore)
+foreach(dependency IN ITEMS mcl fmt oaknut robin-map xbyak zydis zycore)
   if(dependency STREQUAL "fmt")
     set(license_file LICENSE.rst)
+  elseif(dependency STREQUAL "xbyak")
+    set(license_file COPYRIGHT)
   else()
     set(license_file LICENSE)
   endif()

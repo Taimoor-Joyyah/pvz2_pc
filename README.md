@@ -10,6 +10,10 @@ This project is developed with substantial assistance from OpenAI Codex under th
 
 Validation results apply to the specific tests and sessions documented in [the implementation status](docs/status.md) and [the issue tracker](docs/issues.md). They do not establish complete Android compatibility or verification of every gameplay path. Third-party libraries and original game content have separate provenance; see [the third-party notices](THIRD_PARTY_NOTICES.md).
 
+## Download
+
+The [GitHub releases](https://github.com/Taimoor-Joyyah/pvz2_pc/releases) provide source archives and a portable Windows x64 distribution. The first release, `v0.1.0-alpha.1`, is an experimental prerelease. Extract the entire Windows ZIP and open `pvz2pc-launcher.exe`. You must supply your own matching game APK/OBB and install the Microsoft Edge WebView2 Runtime for HTML dialogs. See the [release guide](docs/releases/v0.1.0-alpha.1.md) for setup and limitations.
+
 ## Build
 
 Install Visual Studio's C++ desktop tools (including the Windows SDK), **MSVC toolset 14.51.36231 / compiler 19.51.36257.0**, CMake 3.30 or newer, and Git. The validated host build uses CMake 4.2.1. From PowerShell:
