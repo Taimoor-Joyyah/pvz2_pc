@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "baseline": "81e1b2c-before-optimization",
+  "candidate": "81e1b2c-optimization-worktree",
+  "scope": "synthetic host/ARM64 import microbenchmarks; not gameplay or GPU time",
+  "note": "Medians of warmed synthetic samples. Negative change means less time. No gameplay speedup is implied.",
+  "cases": {
+    "glTexParameteri": {
+      "baseline_ns": 403.669,
+      "candidate_ns": 162.532,
+      "change_percent": -59.736318617481146,
+      "speedup": 2.483627839440848
+    },
+    "import_dispatch": {
+      "baseline_ns": 172.6625,
+      "candidate_ns": 103.225,
+      "change_percent": -40.21573879678564,
+      "speedup": 1.6726810365705982
+    },
+    "linker_host_symbol_4096": {
+      "baseline_ns": 2340.55,
+      "candidate_ns": 10.75,
+      "change_percent": -99.54070624425883,
+      "speedup": 217.72558139534885
+    },
+    "linker_last_symbol_4096": {
+      "baseline_ns": 9849.36,
+      "candidate_ns": 9.605,
+      "change_percent": -99.90248097338305,
+      "speedup": 1025.4409161894846
+    },
+    "malloc_free_4096": {
+      "baseline_ns": 1130.27,
+      "candidate_ns": 748.3,
+      "change_percent": -33.79458005609279,
+      "speedup": 1.5104503541360417
+    },
+    "memcpy_64": {
+      "baseline_ns": 179.163,
+      "candidate_ns": 109.348,
+      "change_percent": -38.96730909841877,
+      "speedup": 1.6384661813659145
+    },
+    "realloc_shrink_4096": {
+      "baseline_ns": 1965.84,
+      "candidate_ns": 1037.43,
+      "change_percent": -47.227139543401286,
+      "speedup": 1.8949133917469128
+    },
+    "setjmp": {
+      "baseline_ns": 211.022,
+      "candidate_ns": 127.648,
+      "change_percent": -39.509624588905425,
+      "speedup": 1.6531555527701178
+    },
+    "strlen_32": {
+      "baseline_ns": 229.355,
+      "candidate_ns": 107.837,
+      "change_percent": -52.98249438643151,
+      "speedup": 2.1268674017266798
+    },
+    "strlen_4095": {
+      "baseline_ns": 6306.12,
+      "candidate_ns": 189.31,
+      "change_percent": -96.99799559792709,
+      "speedup": 33.31107706935714
+    },
+    "strncmp_prefix_32": {
+      "baseline_ns": 18518.97,
+      "candidate_ns": 115.6,
+      "change_percent": -99.37577521860017,
+      "speedup": 160.19870242214535
+    }
+  }
+}

@@ -1,0 +1,225 @@
+{
+  "schema": 1,
+  "date": "2026-10-19",
+  "base_revision": "81e1b2c72dbb629ba58fea70bfad5040c4f3bad7",
+  "build": "Pinned MSVC Windows x64 Release, O2 and LTO; no unsafe JIT switches",
+  "ctest": {
+    "passed": 7,
+    "failed": 0,
+    "skipped": 0,
+    "runtime_contract_checks": 136,
+    "independent_android_fixture": "passed",
+    "note": "Pre-existing intermittent Windows staging-directory rename access denial occurred in baseline and one intermediate final run; explicit rerun and final complete suite passed."
+  },
+  "graphics_smoke": {
+    "result": "passed",
+    "checks": "Shader compilation/linking, pixels, ETC1, arrays, resize, letterboxing, default/offscreen framebuffer and GL state preservation"
+  },
+  "game_sessions": [
+    {
+      "frames": 360,
+      "result": "session-ended",
+      "stop_reason": "frame-limit",
+      "performance_profile": true,
+      "isolated_profile": true,
+      "scope": "Startup/loading/lifecycle only; final capture shows loading artwork, no combat validation",
+      "cpu_fault": null,
+      "worker_errors": [],
+      "frame_time_ms": {
+        "max": 5069.8083,
+        "max_relative_bucket_width": 0.03125,
+        "mean": 51.143501111111114,
+        "p50": 17.825792,
+        "p95": 42.991616,
+        "p99": 486.539264,
+        "percentile_method": "histogram-upper-bound",
+        "samples": 360,
+        "total": 18411.6604
+      },
+      "frame_stages_ms": {
+        "callback_drain": {
+          "max": 0.0002,
+          "max_relative_bucket_width": 0.03125,
+          "mean": 0.0002,
+          "p50": 0.0002,
+          "p95": 0.0002,
+          "p99": 0.0002,
+          "percentile_method": "histogram-upper-bound",
+          "samples": 1,
+          "total": 0.0002
+        },
+        "capture": {
+          "max": 25.5155,
+          "max_relative_bucket_width": 0.03125,
+          "mean": 25.5155,
+          "p50": 25.5155,
+          "p95": 25.5155,
+          "p99": 25.5155,
+          "percentile_method": "histogram-upper-bound",
+          "samples": 1,
+          "total": 25.5155
+        },
+        "events": {
+          "max": 0.3576,
+          "max_relative_bucket_width": 0.03125,
+          "mean": 0.011726944444444446,
+          "p50": 0.009984,
+          "p95": 0.016128,
+          "p99": 0.022016,
+          "percentile_method": "histogram-upper-bound",
+          "samples": 360,
+          "total": 4.2217
+        },
+        "native_draw": {
+          "max": 5069.4292,
+          "max_relative_bucket_width": 0.03125,
+          "mean": 36.87708722222222,
+          "p50": 0.753664,
+          "p95": 33.554432,
+          "p99": 469.762048,
+          "percentile_method": "histogram-upper-bound",
+          "samples": 360,
+          "total": 13275.7514
+        },
+        "pacing": {
+          "max": 17.5205,
+          "max_relative_bucket_width": 0.03125,
+          "mean": 13.757473333333333,
+          "p50": 16.515072,
+          "p95": 17.301504,
+          "p99": 17.5205,
+          "percentile_method": "histogram-upper-bound",
+          "samples": 360,
+          "total": 4952.6904
+        },
+        "presentation": {
+          "max": 1.9017,
+          "max_relative_bucket_width": 0.03125,
+          "mean": 0.051034166666666665,
+          "p50": 0.041984,
+          "p95": 0.067584,
+          "p99": 0.108544,
+          "percentile_method": "histogram-upper-bound",
+          "samples": 360,
+          "total": 18.3723
+        },
+        "startup": {
+          "max": 6620.825,
+          "max_relative_bucket_width": 0.03125,
+          "mean": 6620.825,
+          "p50": 6620.825,
+          "p95": 6620.825,
+          "p99": 6620.825,
+          "percentile_method": "histogram-upper-bound",
+          "samples": 1,
+          "total": 6620.825
+        },
+        "swap": {
+          "max": 12.4244,
+          "max_relative_bucket_width": 0.03125,
+          "mean": 0.3723211111111111,
+          "p50": 0.249856,
+          "p95": 0.516096,
+          "p99": 2.686976,
+          "percentile_method": "histogram-upper-bound",
+          "samples": 360,
+          "total": 134.0356
+        }
+      },
+      "guest_memory": {
+        "address_high_water": 631177216,
+        "allocation_calls": 2948395,
+        "free_ranges": 27633,
+        "live_allocations": 1255975,
+        "live_bytes": 627440928,
+        "realloc_copied_bytes": 8992,
+        "realloc_in_place": 1,
+        "realloc_moved": 10,
+        "zeroed_bytes": 403488160
+      },
+      "guest_cpu_timing": {
+        "scope": "main CPU lifetime; active pthread and callback CPUs excluded",
+        "timing_enabled": true,
+        "jit_wall_ms": 10351.4459,
+        "import_handler_wall_ms": 7111.7076,
+        "memory_callbacks": {
+          "code": 1784120,
+          "read": 3899801,
+          "write": 64809
+        }
+      },
+      "audio": {
+        "completed_callbacks": 2855,
+        "engines_created": 1,
+        "live_players": 1,
+        "players_created": 1,
+        "playing_players": 1,
+        "queued_pcm_bytes": 9216,
+        "streams_opened": 1,
+        "submitted_pcm_bytes": 2205696,
+        "unsupported_requests": {}
+      }
+    },
+    {
+      "frames": 1200,
+      "result": "session-ended",
+      "stop_reason": "frame-limit",
+      "performance_profile": false,
+      "isolated_profile": true,
+      "scope": "Startup/loading/lifecycle only; final capture shows loading artwork, no combat validation",
+      "cpu_fault": null,
+      "worker_errors": [],
+      "frame_time_ms": {
+        "max": 3683.4156,
+        "max_relative_bucket_width": 0.03125,
+        "mean": 28.291651666666667,
+        "p50": 17.825792,
+        "p95": 22.544384,
+        "p99": 268.435456,
+        "percentile_method": "histogram-upper-bound",
+        "samples": 1200,
+        "total": 33949.982
+      },
+      "frame_stages_ms": {},
+      "guest_memory": {
+        "address_high_water": 729878528,
+        "allocation_calls": 4010205,
+        "free_ranges": 26548,
+        "live_allocations": 1286894,
+        "live_bytes": 719422144,
+        "realloc_copied_bytes": 8992,
+        "realloc_in_place": 1,
+        "realloc_moved": 10,
+        "zeroed_bytes": 488660416
+      },
+      "guest_cpu_timing": {
+        "scope": "main CPU lifetime; active pthread and callback CPUs excluded",
+        "timing_enabled": false,
+        "jit_wall_ms": 0.0,
+        "import_handler_wall_ms": 0.0,
+        "memory_callbacks": {
+          "code": 0,
+          "read": 0,
+          "write": 0
+        }
+      },
+      "audio": {
+        "completed_callbacks": 5446,
+        "engines_created": 1,
+        "live_players": 1,
+        "players_created": 1,
+        "playing_players": 1,
+        "queued_pcm_bytes": 10752,
+        "streams_opened": 1,
+        "submitted_pcm_bytes": 4196352,
+        "unsupported_requests": {}
+      }
+    }
+  ],
+  "limitations": [
+    "No warmed combat before/after baseline or emulator comparison",
+    "No complete worker CPU, OS CPU/private-memory or GPU duration accounting",
+    "Profiling adds per-transition clock reads; whole-session load times are not steady gameplay measurements",
+    "Profile-symbol build switch added; profiling-symbol compilation not exercised in this validation"
+  ]
+}

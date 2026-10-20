@@ -12,7 +12,7 @@ Validation results apply to the specific tests and sessions documented in [the i
 
 ## Download
 
-The [GitHub releases](https://github.com/Taimoor-Joyyah/pvz2_pc/releases) provide source archives and a portable Windows x64 distribution. The first release, `v0.1.0-alpha.1`, is an experimental prerelease. Extract the entire Windows ZIP and open `pvz2pc-launcher.exe`. You must supply your own matching game APK/OBB and install the Microsoft Edge WebView2 Runtime for HTML dialogs. See the [release guide](docs/releases/v0.1.0-alpha.1.md) for setup and limitations.
+The [GitHub releases](https://github.com/Taimoor-Joyyah/pvz2_pc/releases) provide source archives and a portable Windows x64 distribution. The current release, `v0.1.0-alpha.2`, is an experimental prerelease with performance, audio and execution-limit improvements. Extract the entire Windows ZIP and open `pvz2pc-launcher.exe`. You must supply your own matching game APK/OBB and install the Microsoft Edge WebView2 Runtime for HTML dialogs. See the [release guide](docs/releases/v0.1.0-alpha.2.md) for setup and limitations.
 
 ## Build
 

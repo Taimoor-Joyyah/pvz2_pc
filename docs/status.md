@@ -2,6 +2,8 @@
 
 The implementation is in active development. **Interactive PVZ2 has reached the Ancient Egypt Day 3 tutorial, and saved world state has restored across launches. Full release qualification is still incomplete.**
 
+The `v0.1.0-alpha.2` performance prerelease includes cached graphics/native/symbol lookups, selected allocator/string/jump-buffer improvements, opt-in profiling and bounded frame-timing storage. Recorded synthetic workloads reduced dispatch time by 40.2%, GL parameter forwarding by 59.7%, and the 4 KiB string scan by 97.0%; these are combined-change measurements, not gameplay FPS gains. All seven Release suites and graphics smoke checks passed during the optimization pass, and isolated 360/1,200-frame startup/loading runs completed without CPU faults or worker errors. The [performance tracker](performance-review.md) preserves raw measurements, validation boundaries and twelve opportunities. See the [alpha.2 release guide](releases/v0.1.0-alpha.2.md) for the packaged changes and remaining limits.
+
 The audio/budget follow-up repairs Windows text-mode corruption of Android file streams, which truncated Wwise media at embedded Ctrl-Z bytes. Actual media reads now match the original bytes, and the user confirmed both effects and music worked well during the final 14,665-frame session, which they exited intentionally. Native drawing uses a 60-second deadline without an arbitrary instruction quota; CPU instruction quotas and deadlines are independent and remain covered alongside cancellation. All seven Release suites pass. See AUDIO-002 and COMPAT-010 in the [issue tracker](issues.md) for the final real-game validation boundary.
 
 The latest offline compatibility pass resolves all 27 previously missing strong
